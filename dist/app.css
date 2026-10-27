@@ -406,6 +406,9 @@ body.oled .details-shade { background: linear-gradient(to right, #000 25%, rgba(
 .aurora .a1 { left: 420px; top: -380px; background: radial-gradient(circle, rgba(51,71,255,0.55) 0%, rgba(51,71,255,0) 65%); -webkit-animation: aur1 14s ease-in-out infinite alternate; animation: aur1 14s ease-in-out infinite alternate; }
 .aurora .a2 { left: 760px; top: -120px; background: radial-gradient(circle, rgba(10,130,136,0.45) 0%, rgba(10,130,136,0) 65%); -webkit-animation: aur2 18s ease-in-out infinite alternate; animation: aur2 18s ease-in-out infinite alternate; }
 .aurora .a3 { left: 200px; top: -60px; background: radial-gradient(circle, rgba(169,180,245,0.35) 0%, rgba(169,180,245,0) 65%); -webkit-animation: aur3 22s ease-in-out infinite alternate; animation: aur3 22s ease-in-out infinite alternate; }
+/* Modo leve: mantém a arte, sem três superfícies grandes animadas continuamente. */
+body.low-memory .aurora i { -webkit-animation: none; animation: none; }
+body.low-memory .hero-bg, body.low-memory .reco-bg { -webkit-transition: opacity 0.7s ease; transition: opacity 0.7s ease; -webkit-transform: none; transform: none; }
 @-webkit-keyframes aur1 { to { -webkit-transform: translate(-260px, 120px) scale(1.15); } }
 @keyframes aur1 { to { transform: translate(-260px, 120px) scale(1.15); } }
 @-webkit-keyframes aur2 { to { -webkit-transform: translate(-320px, -60px) scale(0.9); } }
