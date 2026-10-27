@@ -18,10 +18,17 @@ O diagnóstico enviado pelo usuário mostrou Node 12.4.0 e 98 MB livres naquele 
 - Dependências de execução com lockfile fixo e substituições compatíveis com Node 12
   para `ws` e `ip`; não se deve remover o lockfile ou atualizar esse motor sem repetir os testes.
 
-O tamanho do JavaScript da interface caiu de aproximadamente 589 KiB para 305 KiB
-(bytes do arquivo, não uma medida do uso de RAM). O serviço com torrent é um pacote
-separado, carregado pelo TizenBrew; portanto a redução da interface não representa
-uma redução equivalente da memória total.
+Na revisão 1.3.1, o Smart Choice . Light é testado com múltiplos addons, informações
+incompletas, packs, fontes lembradas, erros e tamanho real do arquivo. A UI tem testes
+para descarte e reativação de imagens, tarefas atrasadas e atividade durante a preparação
+do protetor de tela. Os critérios completos estão em [SMART-CHOICE-LIGHT.md](SMART-CHOICE-LIGHT.md).
+
+O JavaScript da interface continua próximo da metade do tamanho da base original,
+mesmo após acrescentar a política Light. Tamanho de arquivo não mede o uso de RAM.
+O serviço torrent é separado. As artes de destaque são limitadas a uma resolução
+intermediária para preservar nitidez; algumas substituem thumbnails antes menores.
+A economia vem principalmente de liberar imagens/camadas ocultas e tarefas antigas,
+e não de reduzir indiscriminadamente a qualidade de toda imagem.
 
 ## Teste que falta na Samsung
 

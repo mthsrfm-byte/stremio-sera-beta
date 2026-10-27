@@ -67,6 +67,39 @@ export function sortedVideos(meta) {
     });
 }
 
+// Coleta os addons antes de classificar. A fonte lembrada só pode desempatar no ranking.
+// "all" continua recebendo respostas tardias para a lista manual e as tentativas do player.
+export function chooseLightStream(type, videoId, srcs, all, context, isCurrent) {
+  const per = srcs.map(() => null);
+  let resolve;
+  let done = false;
+  const pick = new Promise((ok) => (resolve = ok));
+  // O motor embutido não depende de descobrir um computador na rede.
+  const serverReady = server.nativeEnabled() || server.isAvailable()
+    ? Promise.resolve(server.isAvailable())
+    : server.check().then((r) => !!(r && r.ok), () => false);
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    serverReady.then((ok) => {
+      if (!isCurrent()) return resolve(null);
+      const selected = si.smartPick(all, ok, context);
+      resolve(selected ? selected.stream : null);
+    });
+  };
+  const timer = setTimeout(finish, 12000);
+  Promise.resolve().then(() => addons.fetchStreams(type, videoId, (addon, streams) => {
+    if (!isCurrent()) return;
+    const index = srcs.findIndex((a) => a === addon || a.transportUrl === addon.transportUrl);
+    if (index < 0) return;
+    per[index] = streams;
+    all.length = 0;
+    per.forEach((list) => list && list.forEach((stream) => all.push(stream)));
+  })).then(finish, finish);
+  return pick;
+}
+
 function DetailsView(type, id, opts) {
   const el = h('div.view');
   const bg = h('img.details-bg', { alt: '' });
@@ -81,6 +114,7 @@ function DetailsView(type, id, opts) {
   let mode = 'none';
   let season = null;
   let streamsVideo = null;
+  let smartGeneration = 0;
   let alive = true;
   let watchBtn = null;
   let libBtn = null;
@@ -413,39 +447,14 @@ function DetailsView(type, id, opts) {
   // ~12s). As fontes vão chegando em "all", na ordem de prioridade, para o menu Fontes do player.
   function smartPlay(video) {
     const srcs = streamAddons(video);
-    const per = srcs.map(() => null);
     const all = [];
-    let resolve = null;
-    const pick = new Promise((ok) => (resolve = ok));
-    let done = false;
-    const serverReady = server.isAvailable() ? Promise.resolve(true) : server.check().then((r) => !!(r && r.ok), () => false);
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      serverReady.then((ok) => {
-        // Continuando: a mesma fonte da última vez, se ela ainda veio; senão, a escolha de sempre.
-        const last = si.rememberedStream(video.id, all);
-        if (last && si.canPlay(last, ok)) return resolve(last);
-        const p = si.smartPick(all, ok);
-        resolve(p ? p.stream : null);
-      });
-    };
-    const timer = setTimeout(finish, 12000);
-    serverReady
-      .then(() =>
-        addons.fetchStreams(meta.type, video.id, (addon, streams) => {
-          per[srcs.indexOf(addon)] = streams;
-          all.length = 0;
-          per.forEach((l) => l && l.forEach((x) => all.push(x)));
-          // A fonte da última vez já chegou: não precisa esperar os outros addons.
-          if (si.rememberedStream(video.id, all)) finish();
-        })
-      )
-      .then(finish, finish);
+    const context = si.choiceContext(meta, video, isSeries());
+    const generation = ++smartGeneration;
+    const current = () => alive && generation === smartGeneration;
+    const pick = chooseLightStream(meta.type, video.id, srcs, all, context, current);
     // Nada tocável: volta com a lista aberta para escolher na mão e diz o porquê.
     pick.then((st) => {
-      if (st || !alive) return;
+      if (st || !current()) return;
       showStreams(video, true);
       const torrentsOnly = all.length && all.every((x) => server.needsServer(x));
       setTimeout(
@@ -454,8 +463,8 @@ function DetailsView(type, id, opts) {
             !all.length
               ? t('Nenhuma fonte encontrada para este título.')
               : torrentsOnly && !server.isAvailable()
-                ? t('As fontes deste título são torrent: precisam do servidor do PC ligado.')
-                : t('Nenhuma fonte deste título abre na TV.'),
+                ? t('As fontes deste título precisam de um servidor externo. Configure em Ajustes ou escolha outra fonte.')
+                : t('Nenhuma fonte adequada ao Smart Choice . Light. Escolha uma fonte manualmente.'),
             6000
           ),
         400
@@ -464,18 +473,11 @@ function DetailsView(type, id, opts) {
     play(video, null, all, pick);
   }
 
-  function runtimeMinutes() {
-    const r = String(meta.runtime || '');
-    const hMatch = r.match(/(\d+)\s*h/i);
-    const mMatch = r.match(/(\d+)\s*min/i);
-    const mins = (hMatch ? parseInt(hMatch[1], 10) * 60 : 0) + (mMatch ? parseInt(mMatch[1], 10) : 0);
-    return mins || (isSeries() ? 45 : 110);
-  }
-
   // Taxa estimada do arquivo (tamanho ÷ duração): só aparece quando pesa no Wi-Fi da TV (~34 Mbps).
   function heavyMbps(info) {
-    if (!info.sizeMb) return 0;
-    const mbps = Math.round((info.sizeMb * 8) / (runtimeMinutes() * 60));
+    if (!info.sizeMb || info.sizeScope !== 'file') return 0;
+    const duration = si.choiceContext(meta, streamsVideo, isSeries()).runtimeMinutes;
+    const mbps = Math.round((info.sizeMb * 1048576 * 8) / (duration * 60 * 1e6));
     return mbps > 30 ? mbps : 0;
   }
 
@@ -689,7 +691,8 @@ function DetailsView(type, id, opts) {
           const v = sortedVideos(meta).find((x) => x.id === opts.videoId);
           if (v) season = v.season || 0;
           if (v && opts.autoStreams) {
-            watch(v);
+            if (opts.manualStreams) showStreams(v, true);
+            else watch(v);
             return;
           }
         }

@@ -4,61 +4,15 @@
 import * as server from '../api/server.js';
 import * as store from './store.js';
 
-const FLAG_RE = /\uD83C[\uDDE6-\uDDFF]\uD83C[\uDDE6-\uDDFF]/g;
-const BR = '🇧🇷';
-const PT = '🇵🇹';
-// Emojis e símbolos que os addons usam como ícones (👤 💾 ⚙️ ...), fora do título limpo.
-const ICONS_RE = /[☀-➿️]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDD00-\uDFFF]/g;
-
-function textOf(s) {
-  return (s.name || '') + '\n' + (s.title || s.description || '') + '\n' + ((s.behaviorHints && s.behaviorHints.filename) || '');
-}
-
-export function resolution(text) {
-  if (/2160p|\b4k\b|\buhd\b/i.test(text)) return '4K';
-  if (/1080p|\bfhd\b|\b1080\b/i.test(text)) return '1080p';
-  if (/720p|\bhd\b/i.test(text)) return '720p';
-  if (/480p|\bsd\b|dvdrip|\bcam\b|\bts\b/i.test(text)) return 'SD';
-  return '';
-}
-
-// Dublado: bandeira do Brasil ou de Portugal (o Torrentio marca assim áudio em português; a de
-// Portugal quase sempre é a mesma dublagem) ou as palavras dos lançamentos brasileiros.
-function dubbed(text, flags) {
-  if (flags.indexOf(BR) >= 0 || flags.indexOf(PT) >= 0) return true;
-  return /dublad[oa]|\bdub(?:lagem)?[ ._-]?(?:pt|br)\b|\bpt[ ._-]?br\b|\bnacional\b|portugu[eê]s|\bdual\b[^\n]*\b(?:pt|br|por)\b|\b(?:pt|br|por)\b[^\n]*\bdual\b/i.test(text);
-}
+import { parseMetadata, resolution } from './streammetadata.js';
+import { durationContext, evaluateLight, compareLight } from './smartlight.js';
+export { resolution };
+export const choiceLabel = 'Smart Choice . Light';
 
 export function parse(s) {
   if (s.__info) return s.__info;
-  const text = textOf(s);
-  const flags = text.match(FLAG_RE) || [];
-  const dub = dubbed(text, flags);
-  const others = flags.filter((f) => f !== BR && f !== PT);
-  const seedM = text.match(/👤\s*(\d+)/) || text.match(/\bseed(?:er)?s?\b[:\s]*(\d+)/i) || text.match(/\bS:\s*(\d+)/);
-  const sizeM = text.match(/(\d+(?:[.,]\d+)?)\s*(GB|MB|GiB|MiB)\b/i);
-  const name = String(s.name || s.addon || '');
-  const titleLine = String(s.title || s.description || '').split('\n')[0];
-  const info = {
-    res: resolution(text),
-    dv: /dolby.?vision|\bdovi\b|\bdv\b/i.test(text),
-    hdr: /hdr/i.test(text),
-    remux: /remux/i.test(text),
-    dub: dub,
-    // Original junto: "dual"/"multi", ou outras línguas além do português na lista de bandeiras.
-    original: !dub || /\bdual\b|\bmulti\b|dual.?[aá]udio/i.test(text) || others.length > 0,
-    seeders: seedM ? parseInt(seedM[1], 10) : null,
-    sizeMb: sizeM ? parseFloat(sizeM[1].replace(',', '.')) * (/^g/i.test(sizeM[2]) ? 1024 : 1) : 0,
-    // Debrid com o arquivo em cache ([RD+], [AD+]...) abre na hora, sem depender de seeders.
-    cached: /\[[A-Z]{2,3}\+\]|\binstant\b|⚡/i.test(name),
-    addon: name.split('\n')[0].replace(/\[[A-Z]{2,3}\+?\]/g, '').trim(),
-    file: titleLine.replace(ICONS_RE, '').replace(FLAG_RE, '').replace(/\s{2,}/g, ' ').trim(),
-  };
-  try {
-    Object.defineProperty(s, '__info', { value: info, enumerable: false });
-  } catch (e) {
-    /* objeto congelado: só não guarda */
-  }
+  const info = parseMetadata(s);
+  try { Object.defineProperty(s, '__info', { value: info, enumerable: false }); } catch (e) { /* immutable addon object */ }
   return info;
 }
 
@@ -69,7 +23,7 @@ export function sizeText(mb) {
 
 // Intensidade do sinal (1 a 4 barras) pelo número de seeders.
 export function signal(seeders) {
-  if (seeders === null || seeders === undefined) return 4;
+  if (seeders === null || seeders === undefined) return 0;
   if (seeders >= 100) return 4;
   if (seeders >= 20) return 3;
   if (seeders >= 5) return 2;
@@ -89,10 +43,39 @@ export function signalSvg(level) {
 // Ao parar no meio e continuar depois, o Smart Choice tenta a mesma fonte (mesmo torrent/arquivo).
 // A chave não usa a URL (links de debrid trocam a cada pedido): torrent pelo hash + arquivo,
 // o resto pelo addon + nome + primeira linha do título.
+function torrentId(s) {
+  if (!s || !server.isTorrent(s)) return null;
+  let hash = s.infoHash;
+  if (!hash && typeof s.url === 'string') {
+    const match = /[?&]xt=urn(?::|%3a)btih(?::|%3a)([a-z0-9]+)/i.exec(s.url);
+    if (match) hash = match[1];
+  }
+  hash = String(hash || '').toLowerCase();
+  if (/^[a-z2-7]{32}$/.test(hash)) {
+    let bits = '';
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+    hash.split('').forEach((c) => { bits += ('00000' + alphabet.indexOf(c).toString(2)).slice(-5); });
+    hash = '';
+    for (let i = 0; i < bits.length; i += 4) hash += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return /^[a-f0-9]{40}$/.test(hash) ? { hash, index: s.fileIdx === undefined || s.fileIdx === null ? '' : String(s.fileIdx) } : null;
+}
+
 export function streamKey(s) {
   if (!s) return '';
-  if (s.infoHash) return 'h:' + String(s.infoHash).toLowerCase() + ':' + (s.fileIdx === undefined || s.fileIdx === null ? '' : s.fileIdx);
+  const torrent = torrentId(s);
+  if (torrent) return 'h:' + torrent.hash + ':' + torrent.index;
   return 'n:' + (s.addon || '') + '|' + String(s.name || '').replace(/\s+/g, ' ') + '|' + String(s.title || s.description || '').split('\n')[0];
+}
+
+export function wasTried(s, tried) {
+  const id = torrentId(s);
+  return (tried || []).some((other) => {
+    const otherId = torrentId(other);
+    if (id && otherId) return id.hash === otherId.hash && (!id.index || !otherId.index || id.index === otherId.index);
+    if (s && other && typeof s.url === 'string' && typeof other.url === 'string') return s.url === other.url;
+    return streamKey(s) === streamKey(other);
+  });
 }
 
 const LAST_KEY = 'lastStream';
@@ -117,31 +100,53 @@ export function canPlay(s, serverOk) {
   return server.isPlayableType(s) && (!server.needsServer(s) || serverOk);
 }
 
-const MIN_SEEDERS = 15;
-
-// "Boa": 1080p ou 4K, com sinal suficiente ou em cache no debrid. Link direto sem informação
-// (sites de anime, scrapers) não conta: muitos não tocam na TV.
-export function good(info) {
-  const res = info.res === '4K' || info.res === '1080p';
-  const healthy = info.cached || (info.seeders !== null && info.seeders >= MIN_SEEDERS);
-  return res && healthy;
+// Falhas ficam somente nesta sessão, por dez minutos e com retenção limitada.
+const failures = [];
+function recentFailures(context) {
+  const now = Date.now();
+  for (let i = failures.length - 1; i >= 0; i--) if (failures[i].until <= now) failures.splice(i, 1);
+  return failures.filter((entry) => !entry.videoId || entry.videoId === (context && context.videoId)).map((entry) => entry.stream);
 }
 
-// Smart Choice: primeira fonte da lista com áudio original + dublado e boa; se nenhuma, a primeira
-// que dá para tocar. Dolby Vision fica por último: as TVs Samsung não têm DV, e o arquivo DV sem a
-// camada HDR10 (perfil 5, comum em WEB-DL) nem abre. Retorna { stream, ideal } ou null.
-export function smartPick(list, serverOk) {
-  const playable = list.filter((s) => canPlay(s, serverOk));
-  if (!playable.length) return null;
-  const ideal = (s) => {
-    const info = parse(s);
-    return info.dub && info.original && good(info);
-  };
-  const noDv = playable.filter((s) => !parse(s).dv);
-  for (let i = 0; i < noDv.length; i++) if (ideal(noDv[i])) return { stream: noDv[i], ideal: true };
-  if (noDv.length) return { stream: noDv[0], ideal: false };
-  for (let i = 0; i < playable.length; i++) if (ideal(playable[i])) return { stream: playable[i], ideal: true };
-  return { stream: playable[0], ideal: false };
+export function markFailed(stream, context) {
+  failures.push({ stream: { infoHash: stream.infoHash, fileIdx: stream.fileIdx, url: stream.url, name: stream.name, addon: stream.addon, title: stream.title }, videoId: context && context.videoId || '', until: Date.now() + 10 * 60000 });
+  if (failures.length > 64) failures.shift();
+}
+
+export function choiceContext(meta, video, isSeries) {
+  return Object.assign(durationContext(meta, video, isSeries), { audioLangs: store.settings().audioLangs || [] });
+}
+
+// Uma mesma política atende início, continuação, troca automática e próximo episódio.
+export function smartPick(list, serverOk, context) {
+  const ctx = context || choiceContext(null, null, false);
+  const previous = ctx.videoId ? rememberedStream(ctx.videoId, list) : null;
+  const failed = recentFailures(ctx);
+  const candidates = [];
+  (list || []).forEach((stream) => {
+    if (!stream || !canPlay(stream, serverOk) || wasTried(stream, failed)) return;
+    if (server.isTorrent(stream) && !torrentId(stream)) return;
+    const rank = evaluateLight(parse(stream), ctx, server.isTorrent(stream));
+    if (rank) candidates.push({ stream, rank, key: streamKey(stream) + (server.isTorrent(stream) ? '' : '|' + (stream.url || '')), previous: previous && streamKey(stream) === streamKey(previous) });
+  });
+  candidates.sort(compareLight);
+  const best = candidates[0];
+  return best ? { stream: best.stream, ideal: best.rank.ideal, rank: best.rank } : null;
+}
+
+// Os metadados reais chegam antes de entregar a URL ao player; pacotes não burlam o teto por arquivo.
+export function lightFileError(stream, file, context) {
+  const original = parse(stream);
+  const actual = parseMetadata({ title: file.name || original.file, behaviorHints: { filename: file.name || original.file, videoSize: file.length } });
+  const merged = Object.assign({}, original, actual, {
+    res: actual.res || original.res,
+    videoCodec: actual.videoCodec === 'unknown' ? original.videoCodec : actual.videoCodec,
+    audioCodecs: actual.audioCodecs.length ? actual.audioCodecs : original.audioCodecs,
+    dv: actual.dv || original.dv, hdr: actual.hdr || original.hdr, remux: actual.remux || original.remux,
+    seeders: original.seeders,
+  });
+  return evaluateLight(merged, context || choiceContext(null, null, false), server.isTorrent(stream))
+    ? '' : choiceLabel + ': este arquivo excede o perfil automático de resolução, formato ou tamanho. Tente outra fonte ou escolha manualmente.';
 }
 
 export function summary(info) {

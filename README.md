@@ -20,7 +20,17 @@ A biblioteca e o progresso da conta continuam sendo sincronizados com o Stremio.
 
 O modo de memória reduzida vem ligado por padrão. Ele reduz tarefas de fundo e a carga de elementos que competem com a reprodução. A prioridade é reservar recursos para o vídeo e, no modo local, para o motor torrent.
 
+O layout, os fades de banners e pôsteres e o destaque do foco continuam. Imagens fora da tela, pré-carregamentos e camadas antigas são liberados; no modo leve, efeitos contínuos e filtros grandes são reduzidos. As artes de destaque usam uma resolução limitada própria, sem baixar o original.
+
 As fontes ainda precisam ser compatíveis com o player da Samsung. Uma TV Samsung não ganha suporte a Dolby Vision, novos codecs ou mais memória por usar esta beta. Quando uma fonte não abrir, tente outra versão do arquivo e outra faixa de áudio quando disponível.
+
+## Smart Choice . Light
+
+A seleção automática compara saúde informada dos seeds, carga por duração e compatibilidade.
+Prefere 1080p moderado, permite 720p mais saudável e deixa fontes pesadas/inadequadas para
+escolha manual. Não mantém uma fonte anterior ruim só por ter sido usada antes.
+O tamanho real do arquivo é validado ao preparar um torrent, inclusive em packs.
+Veja os [critérios e limites](docs/SMART-CHOICE-LIGHT.md).
 
 ## Torrents na própria TV
 

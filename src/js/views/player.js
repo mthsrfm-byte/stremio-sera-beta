@@ -155,6 +155,7 @@ function PlayerView(opts) {
   let mediaUrl = '';
   let viaServer = false;
   let viaNative = false;
+  let autoSelecting = !!opts.pick;
   let nativeSessionId = '';
   let startGeneration = 0;
   let slowProbeTimer = null;
@@ -176,6 +177,7 @@ function PlayerView(opts) {
   let syncUi = false; // painel de sincronia da legenda aberto: pausar não mostra os controles
   const tried = opts.stream ? [opts.stream] : [];
 
+  const lightContext = () => si.choiceContext(meta, video, opts.isSeries);
   const seriesInfo = () => (opts.isSeries ? { season: video.season, episode: video.episode } : null);
 
   // Logo do título no canto (o nome escrito fica de reserva quando não tem logo, ex.: vídeos adultos).
@@ -239,6 +241,7 @@ function PlayerView(opts) {
     const sessionId = local ? server.createNativeSessionId() : '';
     nativeSessionId = sessionId;
     const current = () => alive && generation === startGeneration && stream === selectedStream;
+    const choiceCtx = lightContext();
     armSlow(local ? 70000 : SLOW_MS);
     showSpinner(true);
     message('');
@@ -252,7 +255,10 @@ function PlayerView(opts) {
     segmentsLoaded = false;
     hideSkip();
     server
-      .toPlayable(selectedStream, seriesInfo(), { sessionId: sessionId, isCurrent: current })
+      .toPlayable(selectedStream, seriesInfo(), {
+        sessionId: sessionId, isCurrent: current,
+        validateFile: autoSelecting ? (file) => si.lightFileError(selectedStream, file, choiceCtx) : null,
+      })
       .then((res) => {
         if (!current()) {
           if (res.sessionId) server.stopNative(res.sessionId);
@@ -272,6 +278,19 @@ function PlayerView(opts) {
       .catch((e) => {
         if (!current() || e.cancelled) return;
         releaseNative();
+        // Uma fonte pode falhar já nos metadados (por exemplo, peças grandes para a TV).
+        // Falha do serviço inteiro não é motivo para iniciar outros torrents.
+        if (!e.unavailable) {
+          si.markFailed(selectedStream, lightContext());
+          const next = autoFallback();
+          if (next) {
+            failedNotes.push(e.message);
+            toast(t('Tentando outra fonte pelo Smart Choice . Light'), 3500);
+            autoSelecting = true;
+            switchTo(next);
+            return;
+          }
+        }
         fail(e.message);
       });
   }
@@ -370,15 +389,15 @@ function PlayerView(opts) {
     (opts.pick || Promise.resolve(null)).then((s) => {
       if (!alive || stream) return;
       if (!s) {
-        toast(t('Nenhuma fonte tocável encontrada. Escolha na lista.'), 4000);
         router.pop();
         return;
       }
       stream = s;
+      autoSelecting = true;
       tried.push(s);
       const info = si.parse(s);
       introStatus.textContent = t('Preparando o vídeo');
-      introCaption.innerHTML = '<b>✦</b>' + t('Smart Choice') + ' · ' + escapeHtml(si.summary(info) || info.addon);
+      introCaption.innerHTML = '<b>✦</b>' + si.choiceLabel + ' · ' + escapeHtml(si.summary(info) || info.addon);
       start();
     });
   }
@@ -648,11 +667,13 @@ function PlayerView(opts) {
     const generation = startGeneration;
     errorDetails(code, why).then((details) => {
       if (!alive || generation !== startGeneration || failed !== stream) return;
+      si.markFailed(failed, lightContext());
       const next = autoFallback();
       if (next) {
         failedNotes.push(details);
         const what = addons.isTubeStream(next) ? String(next.name || '').split('\n').join(' ') : si.summary(si.parse(next)) || si.parse(next).addon;
         toast(si.parse(failed).dv ? t('Dolby Vision não abre na TV. Tentando: {what}', { what: what }) : t('Tentando: {what}', { what: what }), 4000);
+        autoSelecting = true;
         switchTo(next);
         return;
       }
@@ -663,22 +684,24 @@ function PlayerView(opts) {
     });
   }
 
-  // Fonte que não abre: tenta outra sozinho antes de mostrar o erro (que então lista o que aconteceu
-  // com cada tentativa). XVideos/Pornhub: a próxima opção do mesmo addon (direto, pelo serviço, outra
-  // qualidade). Filmes e séries: até 2 outras fontes, sem Dolby Vision e na mesma resolução se der.
+  // Uma tentativa inicial e no máximo duas alternativas por episódio/seleção manual.
+  // A saúde e a carga continuam valendo nas recuperações; não prende a mesma resolução.
   const failedNotes = [];
   let autoTries = 0;
   function autoFallback() {
-    const rest = (opts.streams || []).filter((x) => tried.indexOf(x) < 0);
-    if (addons.isTubeStream(stream)) return rest.find((x) => x.addon === stream.addon) || null;
     if (autoTries >= 2) return null;
-    const res = si.parse(stream).res;
-    const ok = server.isAvailable();
-    const cands = rest.filter((x) => !si.parse(x).dv && si.canPlay(x, ok));
-    const pick = si.smartPick(cands.filter((x) => si.parse(x).res === res), ok) || si.smartPick(cands, ok);
-    if (!pick) return null;
+    const rest = (opts.streams || []).filter((candidate) => !si.wasTried(candidate, tried));
+    let next = null;
+    if (addons.isTubeStream(stream)) {
+      // As opções do mesmo vídeo de site são variantes diretas do próprio addon.
+      next = rest.find((candidate) => candidate.addon === stream.addon) || null;
+    } else {
+      const pick = si.smartPick(rest, server.isAvailable(), lightContext());
+      next = pick && pick.stream;
+    }
+    if (!next) return null;
     autoTries++;
-    return pick.stream;
+    return next;
   }
 
   // Linha de diagnóstico do aviso de erro: código do player, de onde veio o link e, se o vídeo
@@ -1044,7 +1067,7 @@ function PlayerView(opts) {
     introLogo.src = meta.logo || hero.logo(meta.id);
     introSub.textContent = opts.isSeries ? 'T' + video.season + ' E' + video.episode + ' · ' + (video.namePt || video.name || video.title || '') : '';
     introStatus.textContent = stream ? t('Preparando o vídeo') : t('Escolhendo a melhor fonte');
-    introCaption.innerHTML = stream ? '' : '<b>✦</b>' + t('Smart Choice ativado');
+    introCaption.innerHTML = stream ? '' : '<b>✦</b>' + si.choiceLabel;
   }
 
   function hideIntro() {
@@ -1525,6 +1548,8 @@ function PlayerView(opts) {
         const s = opts.streams[i];
         if (!s || s === stream) return;
         if (server.needsServer(s) && !server.isAvailable()) return toast(t('Essa fonte precisa de um servidor Stremio externo.'));
+        autoSelecting = false;
+        autoTries = 0; // uma escolha explícita do usuário inicia outro orçamento de recuperação
         switchTo(s);
       },
     });
@@ -1536,7 +1561,7 @@ function PlayerView(opts) {
     if (videoEl.currentTime > 1) pendingStart = videoEl.currentTime * 1000;
     stream = s;
     slowExtensions = 0;
-    if (tried.indexOf(s) < 0) tried.push(s);
+    if (!si.wasTried(s, tried)) tried.push(s);
     triedTranscode = false;
     autoDone = { sub: false, audio: false };
     start();
@@ -1653,47 +1678,52 @@ function PlayerView(opts) {
         );
         return;
       }
-      // Próxima fonte: a melhor (Smart Choice) entre as que ainda não foram tentadas,
-      // preferindo a mesma resolução.
-      const rest = (opts.streams || []).filter((x) => tried.indexOf(x) < 0);
-      const res = si.parse(stream).res;
-      const same = rest.filter((x) => si.parse(x).res === res);
-      const pick = si.smartPick(same, server.isAvailable()) || si.smartPick(rest, server.isAvailable());
-      if (!pick) {
+      // A conexão está presente, mas a fonte não progrediu: não a reutiliza no automático.
+      si.markFailed(stream, lightContext());
+      const next = autoFallback();
+      if (!next) {
         message('');
-        fail(t('Nenhuma outra fonte disponível para tentar.'));
+        fail(t('Nenhuma outra fonte adequada ao Smart Choice . Light para tentar. Escolha manualmente.'));
         return;
       }
+      const pick = { stream: next };
       const info = si.parse(pick.stream);
       toast(t('Tentando: {what}', { what: si.summary(info) || info.addon }), 3500);
+      autoSelecting = true;
       switchTo(pick.stream);
     });
   }
 
-  // Próximo episódio: mantém o mesmo "bingeGroup" (mesma qualidade/fonte) quando possível.
+  // Cada episódio recebe uma nova avaliação; bingeGroup não passa por cima do perfil Light.
   function playNext() {
     const generation = startGeneration;
     const nv = nextVideo();
     if (!nv) return;
     saveProgress();
-    const group = stream && stream.behaviorHints && stream.behaviorHints.bingeGroup;
     showSpinner(true);
     message(t('Procurando o próximo episódio...'));
     addons.fetchStreams(meta.type, nv.id).then((list) => {
       if (!alive || generation !== startGeneration) return;
-      const match = group ? list.find((s) => s.behaviorHints && s.behaviorHints.bingeGroup === group) : null;
-      if (match && (!server.needsServer(match) || server.isAvailable())) {
+      const pick = si.smartPick(list, server.isAvailable(), si.choiceContext(meta, nv, opts.isSeries));
+      if (pick) {
         video = nv;
-        stream = match;
+        stream = pick.stream;
+        autoSelecting = true;
         opts.streams = list;
+        tried.length = 0;
+        tried.push(stream);
+        autoTries = 0;
+        failedNotes.length = 0;
         pendingStart = 0;
         triedTranscode = false;
         autoDone = { sub: false, audio: false };
         start();
       } else {
         router.pop();
-        openDetails(meta.type, meta.id, { videoId: nv.id, autoStreams: true });
+        openDetails(meta.type, meta.id, { videoId: nv.id, autoStreams: true, manualStreams: true });
       }
+    }).catch(() => {
+      if (alive && generation === startGeneration) fail(t('Não foi possível buscar as fontes do próximo episódio.'));
     });
   }
 

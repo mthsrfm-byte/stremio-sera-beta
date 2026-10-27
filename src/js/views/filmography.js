@@ -115,7 +115,7 @@ function FilmographyView(person) {
     im.src = url;
     photo.appendChild(im);
     // Fundo: a própria foto em miniatura esticada (fica desfocada sem custar um blur na TV).
-    ambient.style.backgroundImage = 'url("' + url.replace(/\/(h632|w185)\//, '/w45/') + '")';
+    ambient.style.backgroundImage = store.settings().lowMemory !== false ? '' : 'url("' + url.replace(/\/(h632|w185)\//, '/w45/') + '")';
   }
 
   function renderInfo() {

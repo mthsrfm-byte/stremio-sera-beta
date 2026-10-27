@@ -551,7 +551,7 @@ export function SettingsView() {
 
     body.appendChild(h('div.set-section', { text: t('Reprodução') }));
     body.appendChild(
-      row(t('Smart Choice'), t('Ao escolher um episódio, já abre a melhor fonte: original + dublado, boa qualidade e bem semeada'), '', () => {
+      row(t('Smart Choice . Light'), t('Prefere fontes até 1080p com seeds saudáveis e carga moderada; idioma e fonte anterior só desempatam opções adequadas'), '', () => {
         store.saveSettings({ smartChoice: store.settings().smartChoice === false });
         render();
       }, toggle(s.smartChoice !== false))

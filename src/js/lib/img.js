@@ -1,4 +1,4 @@
-// Versões menores das imagens. A TV tem ~180 MB livres e o que pesa é a imagem DECODIFICADA:
+// Versões menores das imagens. A TV tem pouca RAM; o que pesa é a imagem DECODIFICADA:
 // pôster 500x750 ≈ 1,5 MB; original do Kitsu 2715x3840 ≈ 41 MB (!). O cartão tem só 210x315.
 import { getJSON } from './http.js';
 
@@ -26,6 +26,16 @@ export function smallThumb(url) {
   return String(url)
     .replace(/(image\.tmdb\.org\/t\/p\/)[^/]+\//, '$1w300/')
     .replace(/(artworks\.thetvdb\.com\/banners\/(?:[^?]*\/)?episodes\/[^/?]+?)(?:_t)?\.(jpg|png)/, '$1_t.$2');
+}
+
+// Arte de destaque: maior que um thumbnail, sem baixar o original de vários megapixels.
+// w780 mantém detalhe no lado visível do banner, coberto em parte pelos gradientes.
+export function cinemaBackground(url) {
+  if (!url) return url;
+  return String(url)
+    .replace(/(image\.tmdb\.org\/t\/p\/)[^/]+\//, '$1w780/')
+    .replace(/(images\.metahub\.space\/background\/)(small|large)\//, '$1medium/')
+    .replace(/(kitsu\.app\/anime\/(?:poster|cover)_images\/\d+\/)(original|large)\.(jpg|jpeg|png)/, '$1small.jpg');
 }
 
 // ---------- Kitsu ----------

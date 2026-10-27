@@ -1,5 +1,6 @@
 // h('div.card#id', { attrs, on }, children) — helper minimalista para montar DOM.
 import { kitsuInfo, kitsuSmall } from './img.js';
+import * as store from './store.js';
 export function h(tag, props, children) {
   const parts = tag.split(/(?=[.#])/);
   const el = document.createElement(parts[0] || 'div');
@@ -36,6 +37,7 @@ export function append(el, children) {
 }
 
 export function clear(el) {
+  unloadImages(el);
   while (el.firstChild) el.removeChild(el.firstChild);
   return el;
 }
@@ -53,14 +55,14 @@ export function $$(sel, root) {
 const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 
 export function lazyImg(url, cls) {
-  const el = h('img', { cls: cls, alt: '' });
+  const el = h('img', { cls: cls, alt: '', decoding: 'async' });
   if (url) el.setAttribute('data-lazy', url);
   return el;
 }
 
 // A imagem só aparece pronta (classe "ready" com fade no CSS), nunca se formando aos pedaços.
 function onLoaded() {
-  if (!this.__on) return;
+  if (!this.__on || this.naturalWidth === 0) return;
   this.classList.add('ready');
   if (this.parentNode) this.parentNode.classList.add('img-loaded'); // para o esqueleto (shimmer)
 }
@@ -68,6 +70,7 @@ function onLoaded() {
 function setOn(el, on) {
   if (on && !el.__on) {
     el.__on = true;
+    const generation = el.__lazyGeneration = (el.__lazyGeneration || 0) + 1;
     if (!el.__readyHook) {
       el.__readyHook = true;
       el.addEventListener('load', onLoaded);
@@ -80,7 +83,7 @@ function setOn(el, on) {
     }
     // Original do Kitsu (até 41 MB decodificado): troca pela versão "small" antes de carregar.
     kitsuSmall(kitsu).then((small) => {
-      if (!el.__on) return;
+      if (!el.__on || generation !== el.__lazyGeneration) return;
       if (small) {
         el.setAttribute('data-lazy', small);
         el.src = small;
@@ -88,6 +91,7 @@ function setOn(el, on) {
     });
   } else if (!on && el.__on) {
     el.__on = false;
+    el.__lazyGeneration = (el.__lazyGeneration || 0) + 1;
     el.classList.remove('ready');
     if (el.parentNode) el.parentNode.classList.remove('img-loaded');
     el.src = BLANK;
@@ -95,23 +99,29 @@ function setOn(el, on) {
 }
 
 export function loadVisibleImages(root, margin) {
-  const m = margin === undefined ? 400 : margin;
+  const light = store.settings().lowMemory !== false;
+  const m = margin === undefined ? (light ? 220 : 400) : Math.min(margin, light ? 300 : margin);
   const W = window.innerWidth;
   const H = window.innerHeight;
   // Margem curta: só ~1 tela além da visível fica na memória.
-  const isFar = (r) => r.right < -W * 0.5 || r.left > W * 1.6 || r.bottom < -H * 0.8 || r.top > H * 1.8;
+  const beyond = light ? 0.35 : 0.8;
+  const isFar = (r) => r.right < -W * 0.35 || r.left > W * 1.35 || r.bottom < -H * beyond || r.top > H * (1 + beyond);
   const handled = [];
   // Fileiras inteiras longe da tela: descarrega sem medir imagem por imagem.
   $$('[data-scroll-x]', root).forEach((track) => {
-    if (track.offsetParent === null) return;
+    if (track.offsetParent === null) {
+      $$('img[data-lazy]', track).forEach((el) => setOn(el, false));
+      handled.push(track);
+      return;
+    }
     const tr = track.getBoundingClientRect();
-    if (tr.bottom < -H * 0.8 || tr.top > H * 1.8) {
+    if (tr.bottom < -H * beyond || tr.top > H * (1 + beyond)) {
       $$('img[data-lazy]', track).forEach((el) => setOn(el, false));
       handled.push(track);
     }
   });
   $$('img[data-lazy]', root).forEach((el) => {
-    if (el.offsetParent === null) return; // oculta (display:none)
+    if (el.offsetParent === null) return setOn(el, false); // oculta (display:none)
     for (let i = 0; i < handled.length; i++) if (handled[i].contains(el)) return;
     const r = el.getBoundingClientRect();
     const near = r.right > -m && r.left < W + m && r.bottom > -m && r.top < H + m;
@@ -122,13 +132,7 @@ export function loadVisibleImages(root, margin) {
 
 // Libera todas as imagens de uma tela que saiu de vista.
 export function unloadImages(root) {
-  $$('img[data-lazy]', root).forEach((el) => {
-    if (el.__on) {
-      el.__on = false;
-      el.classList.remove('ready');
-      el.src = BLANK;
-    }
-  });
+  $$('img[data-lazy]', root).forEach((el) => setOn(el, false));
 }
 
 export function debounce(fn, ms) {

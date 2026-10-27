@@ -62,6 +62,10 @@ function nativeTorrent(infoHash, fileIdx, sources, seriesInfo, options) {
       if (!r || !r.url || !r.sessionId || r.sessionId !== sessionId || !isNativeMediaUrl(r.url)) {
         throw new Error(t('Resposta inválida do motor torrent local. Atualize a beta.'));
       }
+      if (o.validateFile) {
+        const reason = o.validateFile({ name: r.name, length: r.length });
+        if (reason) throw new Error(reason);
+      }
       return { url: r.url, viaServer: false, viaNative: true, sessionId: sessionId };
     })
     .catch((e) => {
@@ -72,7 +76,11 @@ function nativeTorrent(infoHash, fileIdx, sources, seriesInfo, options) {
         : e.status === 0 || e.status === 404
           ? t('O serviço da TV não respondeu. Abra a beta pelo TizenBrew ou atualize o módulo.')
           : e.detail || e.message;
-      throw new Error(t('Torrent local: {msg}', { msg: detail }));
+      const wrapped = new Error(t('Torrent local: {msg}', { msg: detail }));
+      wrapped.status = e.status;
+      wrapped.timeout = e.timeout;
+      wrapped.unavailable = !e.timeout && (e.status === 0 || e.status === 404);
+      throw wrapped;
     });
 }
 

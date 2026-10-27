@@ -15,6 +15,7 @@ import * as reco from '../api/recommend.js';
 import { simpleRow, showRetry } from './recommended.js';
 import { genreName } from '../lib/genres.js';
 import * as store from '../lib/store.js';
+import { cinemaBackground } from '../lib/img.js';
 
 const ROTATE_MS = 8000;
 
@@ -325,11 +326,18 @@ function buildHero() {
     el.style.display = '';
     const back = front === bgA ? bgB : bgA;
     if (preloading) { preloading.onload = preloading.onerror = null; preloading.src = ''; }
+    const artUrl = store.settings().lowMemory !== false ? cinemaBackground(it.background) : it.background;
     const pre = preloading = new Image();
+    const releasePreload = () => {
+      if (preloading === pre) preloading = null;
+      pre.onload = pre.onerror = null;
+      pre.src = '';
+    };
+    pre.onerror = releasePreload;
     const token = ++bgToken;
     pre.onload = () => {
       if (token !== bgToken) return;
-      back.style.backgroundImage = 'url("' + it.background + '")';
+      back.style.backgroundImage = 'url("' + artUrl + '")';
       // Dois frames para o fundo ser pintado antes do fade.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
@@ -339,13 +347,14 @@ function buildHero() {
           back.classList.add('show');
           front.classList.remove('show');
           front = back;
+          releasePreload();
           fadeTimer = setTimeout(() => {
             if (alive && !paused && token === bgToken && previous !== front) previous.style.backgroundImage = '';
           }, 750);
         })
       );
     };
-    pre.src = it.background;
+    pre.src = artUrl;
     title.textContent = it.name;
     title.style.display = 'none';
     logo.style.display = '';

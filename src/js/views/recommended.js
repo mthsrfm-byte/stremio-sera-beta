@@ -12,6 +12,7 @@ import { openDetails } from './details.js';
 import * as reco from '../api/recommend.js';
 import { t } from '../lib/i18n.js';
 import * as store from '../lib/store.js';
+import { cinemaBackground } from '../lib/img.js';
 
 const ROW_LIMIT = 20;
 const PREVIEW_MS = 350; // parado no título: troca o destaque
@@ -124,9 +125,15 @@ function Billboard() {
       front.classList.remove('show'); // sem arte: fica a aurora
       return;
     }
-    if (store.settings().lowMemory !== false) url = url.replace(/(image\.tmdb\.org\/t\/p\/)\w+\//, '$1w780/');
+    if (store.settings().lowMemory !== false) url = cinemaBackground(url);
     stopArt();
     const pre = preloading = new Image();
+    const releasePreload = () => {
+      if (preloading === pre) preloading = null;
+      pre.onload = pre.onerror = null;
+      pre.src = '';
+    };
+    pre.onerror = releasePreload;
     pre.onload = () => {
       if (tk !== token) return;
       const back = front === bgA ? bgB : bgA;
@@ -141,6 +148,7 @@ function Billboard() {
           back.classList.add('show');
           front.classList.remove('show');
           front = back;
+          releasePreload();
           artTimer = setTimeout(() => {
             if (alive && tk === token && previous !== front) previous.style.backgroundImage = '';
           }, 750);

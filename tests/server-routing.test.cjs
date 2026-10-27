@@ -52,6 +52,28 @@ async function harness(options) {
 
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
 
+test('automatic real-file rejection stops its own session before exposing a media URL', async () => {
+  const { api, calls } = await harness({ request: (method, url, body) => url.endsWith('/start')
+    ? { sessionId: body.sessionId, url: LOCAL + 'stream/' + body.sessionId + '/0', name: 'Season.E01.mkv', length: 20e9 }
+    : { stopped: true } });
+  let actual;
+  await assert.rejects(api.toPlayable({ infoHash: HASH }, null, { sessionId: 'too-heavy', validateFile: (file) => {
+    actual = file; return 'Arquivo real pesado demais';
+  } }), /Arquivo real pesado/);
+  assert.equal(actual.length, 20e9);
+  assert.equal(calls.some(c => c.url.endsWith('/stop') && c.body.sessionId === 'too-heavy'), true);
+});
+
+test('service unavailability is distinct from a torrent metadata timeout', async () => {
+  for (const timeout of [false, true]) {
+    const { api } = await harness({ request: (method, url) => {
+      if (url.endsWith('/start')) throw Object.assign(new Error('network'), { status: 0, timeout });
+      return {};
+    } });
+    await assert.rejects(api.toPlayable({ infoHash: HASH }, null, { sessionId: 'network-check' }), error => error.unavailable === !timeout);
+  }
+});
+
 test('native torrents remain playable without advertising external server availability', async () => {
   const { api, calls } = await harness();
   assert.equal(api.nativeEnabled(), true);
@@ -203,7 +225,7 @@ function playerHarness() {
     store: { settings: () => settings, get: (key, fallback) => fallback, set: noop },
     log: { info: noop, warn: noop },
     getJSON: () => Promise.resolve({}), getText: () => Promise.resolve(''), clearCache: () => events.push('clear-cache'),
-    si: { parse: () => ({}), summary: () => '', rememberStream: noop },
+    si: { parse: () => ({}), summary: () => '', rememberStream: noop, choiceContext: () => ({}), choiceLabel: 'Smart Choice . Light', markFailed: noop, wasTried: (value, list) => list.indexOf(value) >= 0, smartPick: () => null, lightFileError: () => '' },
     hlsplay: { isHls: () => false },
     calendar: { startingWithin: () => [] },
     server: {

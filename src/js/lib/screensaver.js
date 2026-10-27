@@ -5,6 +5,7 @@ import { h, clear } from './dom.js';
 import * as store from './store.js';
 import { t } from './i18n.js';
 import * as hero from '../api/hero.js';
+import { cinemaBackground, smallBackground } from './img.js';
 
 const SLIDE_MS = 10000;
 const HINT_MS = 6000;
@@ -29,6 +30,40 @@ let clockTimer = null;
 let front = null;
 let back = null;
 let parts = null;
+let installed = false;
+let starting = false;
+let generation = 0;
+let preloading = null;
+let preloadTimer = null;
+let swapTimer = null;
+let textTimer = null;
+let hintTimer = null;
+let removeTimer = null;
+let retired = null;
+
+function light() { return store.settings().lowMemory !== false; }
+function releasePreload() {
+  clearTimeout(preloadTimer);
+  preloadTimer = null;
+  if (preloading) {
+    preloading.onload = preloading.onerror = null;
+    preloading.src = '';
+    preloading = null;
+  }
+}
+function disposeRetired() {
+  clearTimeout(removeTimer);
+  if (!retired) return;
+  retired.front.style.backgroundImage = retired.back.style.backgroundImage = '';
+  retired.parts.nextImg.style.backgroundImage = '';
+  Array.prototype.forEach.call(retired.el.querySelectorAll('img'), (img) => {
+    img.onload = img.onerror = null;
+    img.removeAttribute('src');
+  });
+  if (retired.el.parentNode) retired.el.parentNode.removeChild(retired.el);
+  retired = null;
+}
+
 
 export const OPTIONS = [0, 2, 5, 10, 20]; // minutos (0 = desligado)
 
@@ -38,6 +73,8 @@ export function minutes() {
 }
 
 export function install() {
+  if (installed) return arm();
+  installed = true;
   // Na captura da window: corre antes da navegação do app e engole a tecla que acorda a tela.
   window.addEventListener(
     'keydown',
@@ -60,18 +97,26 @@ export function install() {
     if (el) stop();
     else arm();
   });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { stop(false); clearTimeout(idleTimer); }
+    else arm();
+  });
   arm();
 }
 
 export function arm() {
+  // Atividade enquanto o catálogo carrega também cancela a abertura, sem capturar a tecla.
+  if (starting) { generation++; starting = false; }
   clearTimeout(idleTimer);
   const m = minutes();
-  if (m > 0) idleTimer = setTimeout(maybeStart, m * 60000);
+  if (m > 0 && !document.hidden) idleTimer = setTimeout(maybeStart, m * 60000);
 }
 
 // Vídeo tocando (player, prévias) não é tela parada.
 function busy() {
   if (document.hidden) return true;
+  // Na TV leve, não cria outro conjunto de fundos durante o player ou a preparação do torrent.
+  if (light() && document.querySelector('.player:not(.hidden)')) return true;
   const vids = document.getElementsByTagName('video');
   for (let i = 0; i < vids.length; i++) {
     const v = vids[i];
@@ -104,10 +149,14 @@ function loadItems() {
 }
 
 export function start() {
-  if (el) return;
+  if (el || starting || document.hidden) return;
+  starting = true;
+  const token = ++generation;
   loadItems().then((list) => {
-    if (el || !list.length) return arm();
-    if (busy()) return arm();
+    if (token !== generation) return;
+    starting = false;
+    if (el || !list.length || busy()) return arm();
+    disposeRetired();
     build();
     idx = Math.floor(Math.random() * list.length);
     tick();
@@ -115,15 +164,25 @@ export function start() {
   });
 }
 
-export function stop() {
-  if (!el) return;
+export function stop(rearm) {
+  generation++;
+  starting = false;
+  releasePreload();
   clearTimeout(slideTimer);
   clearInterval(clockTimer);
-  const old = el;
-  el = null;
-  old.classList.remove('on');
-  setTimeout(() => old.parentNode && old.parentNode.removeChild(old), 450);
-  arm();
+  clearTimeout(swapTimer);
+  clearTimeout(textTimer);
+  clearTimeout(hintTimer);
+  disposeRetired();
+  if (el) {
+    retired = { el, front, back, parts };
+    el.classList.remove('on');
+    el = front = back = parts = null;
+    // Mantém o fade de saída e depois solta imagens e referências.
+    if (rearm === false) disposeRetired();
+    else removeTimer = setTimeout(disposeRetired, 450);
+  }
+  if (rearm !== false) arm();
 }
 
 function build() {
@@ -162,7 +221,8 @@ function build() {
   document.getElementById('app').appendChild(el);
   clock();
   clockTimer = setInterval(clock, 15000);
-  setTimeout(() => el && el.classList.add('hint-off'), HINT_MS);
+  const token = generation;
+  hintTimer = setTimeout(() => token === generation && el && el.classList.add('hint-off'), HINT_MS);
 }
 
 function show(first) {
@@ -172,6 +232,7 @@ function show(first) {
 }
 
 function clock() {
+  if (!parts) return;
   const d = new Date();
   parts.time.textContent = d.getHours() + ':' + ('0' + d.getMinutes()).slice(-2);
   parts.date.textContent = DAYS[d.getDay()] + ', ' + d.getDate() + ' de ' + MONTHS[d.getMonth()];
@@ -184,21 +245,25 @@ function setTransform(node, v) {
 
 function tick() {
   if (!el) return;
+  releasePreload();
+  const token = generation;
   const it = items[idx % items.length];
-  const img = new Image();
+  const art = light() ? cinemaBackground(it.background) : it.background;
+  const img = preloading = new Image();
   let done = false;
   const go = () => {
-    if (done || !el) return;
+    if (done || !el || token !== generation) return;
     done = true;
-    slide(it, img.naturalWidth ? it.background : '');
+    slide(it, img.naturalWidth ? art : '', token);
+    releasePreload();
   };
   img.onload = go;
   img.onerror = go;
-  img.src = it.background;
-  setTimeout(go, 4000);
+  img.src = art;
+  preloadTimer = setTimeout(go, 4000);
 }
 
-function slide(it, bg) {
+function slide(it, bg, token) {
   const p = parts;
   // Fundo: a camada de trás recebe a imagem nova, começa parada e vai andando; depois troca de lugar.
   const layer = back;
@@ -210,16 +275,22 @@ function slide(it, bg) {
   setTransform(layer, 'scale(1.02) translate(0px, 0px)');
   layer.style.backgroundImage = bg ? 'url("' + bg + '")' : 'none';
   void layer.offsetWidth;
-  layer.style.webkitTransition = 'opacity 1.6s ease, -webkit-transform ' + (SLIDE_MS + 2500) + 'ms linear';
-  layer.style.transition = 'opacity 1.6s ease, transform ' + (SLIDE_MS + 2500) + 'ms linear';
+  layer.style.webkitTransition = light() ? 'opacity 0.4s ease' : 'opacity 1.6s ease, -webkit-transform ' + (SLIDE_MS + 2500) + 'ms linear';
+  layer.style.transition = light() ? 'opacity 0.4s ease' : 'opacity 1.6s ease, transform ' + (SLIDE_MS + 2500) + 'ms linear';
   layer.classList.add('front');
   back.classList.remove('front');
-  setTransform(layer, 'scale(' + mv[0] + ') translate(' + mv[1] + 'px, ' + mv[2] + 'px)');
+  setTransform(layer, light() ? 'none' : 'scale(' + mv[0] + ') translate(' + mv[1] + 'px, ' + mv[2] + 'px)');
+  const previous = back;
+  clearTimeout(swapTimer);
+  swapTimer = setTimeout(() => {
+    if (token === generation && el && previous !== front) previous.style.backgroundImage = '';
+  }, light() ? 450 : 1700);
 
   // Texto: sai, troca e entra de novo.
   p.info.classList.remove('in');
-  setTimeout(() => {
-    if (!el) return;
+  clearTimeout(textTimer);
+  textTimer = setTimeout(() => {
+    if (!el || token !== generation) return;
     p.num.textContent = String(it.rank);
     p.rankTxt.innerHTML = '';
     p.rankTxt.appendChild(h('b', { text: t('Top 10 de hoje') }));
@@ -230,6 +301,7 @@ function slide(it, bg) {
     if (it.logo) {
       const lg = h('img.sv-logo', { alt: '' });
       lg.onload = () => {
+        if (!el || token !== generation) return;
         name.style.display = 'none';
         lg.classList.add('ready');
       };
@@ -251,9 +323,9 @@ function slide(it, bg) {
     p.info.classList.add('in');
 
     const nx = items[(idx + 1) % items.length];
-    p.nextImg.style.backgroundImage = nx.background ? 'url("' + nx.background + '")' : 'none';
+    p.nextImg.style.backgroundImage = nx.background ? 'url("' + smallBackground(nx.background) + '")' : 'none';
     p.nextName.textContent = nx.name || '';
-  }, 600);
+  }, light() ? 180 : 600);
 
   // Barras estilo stories: as anteriores cheias, a atual enchendo.
   const bars = p.bars.children;
