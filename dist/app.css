@@ -1111,3 +1111,85 @@ body.light .card-stats { color: rgba(17,17,16,0.6); }
 .sv-bar i { display: block; width: 0; height: 5px; background: #F5F4EF; }
 .sv-hint { position: absolute; left: 0; right: 0; bottom: 30px; text-align: center; font-size: 20px; color: rgba(245,244,239,0.6); -webkit-transition: opacity 1s; transition: opacity 1s; }
 .saver.hint-off .sv-hint { opacity: 0; }
+
+/* Modo leve com acabamento: as mudanças de foco e os fades continuam, mas as
+   superfícies grandes não ficam sendo repintadas ou filtradas continuamente.
+   Sem will-change/translateZ persistentes: o compositor só cria camadas quando precisa. */
+body.low-memory .poster-wrap,
+body.low-memory .episode .thumb,
+body.low-memory .cast .ph,
+body.low-memory .provider-logo,
+body.low-memory .cal-card.skel {
+  -webkit-animation: none;
+  animation: none;
+  background-size: 100% 100%;
+  background-position: center;
+}
+body.low-memory .card .poster-wrap img,
+body.low-memory .episode .thumb img,
+body.low-memory .cast .ph img,
+body.low-memory .provider-logo img {
+  -webkit-transition: opacity 0.22s ease;
+  transition: opacity 0.22s ease;
+}
+body.low-memory .hero-bg,
+body.low-memory .reco-bg {
+  -webkit-transition: opacity 0.4s ease;
+  transition: opacity 0.4s ease;
+}
+body.low-memory .aurora {
+  background-image: radial-gradient(ellipse at 70% 20%, rgba(51,71,255,0.24), rgba(51,71,255,0) 65%), radial-gradient(ellipse at 92% 65%, rgba(10,130,136,0.2), rgba(10,130,136,0) 62%);
+}
+body.low-memory .aurora i { display: none; }
+body.low-memory .pi-bg.show {
+  -webkit-animation: none;
+  animation: none;
+  -webkit-transform: none;
+  transform: none;
+}
+body.low-memory .pi-bg {
+  left: 0; top: 0; right: 0; bottom: 0;
+  -webkit-transition: opacity 0.4s ease;
+  transition: opacity 0.4s ease;
+}
+body.low-memory .provider-logo {
+  -webkit-filter: none;
+  filter: none;
+  -webkit-transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease;
+}
+body.low-memory .provider {
+  -webkit-transition: background-color 0.2s ease;
+  transition: background-color 0.2s ease;
+}
+body.low-memory .provider-name {
+  -webkit-transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease;
+}
+body.low-memory .cast .ph {
+  -webkit-transition: -webkit-transform 0.18s ease;
+  transition: transform 0.18s ease;
+}
+body.low-memory .cast.focused .ph {
+  box-shadow: 0 0 0 4px #0e0e0d, 0 0 0 8px #3347FF;
+}
+body.low-memory.light .cast.focused .ph {
+  box-shadow: 0 0 0 4px #F5F4EF, 0 0 0 8px #3347FF;
+}
+body.low-memory .fp-ambient {
+  left: 0; top: 0; right: 0; bottom: 0;
+  -webkit-filter: none;
+  filter: none;
+  -webkit-transform: none;
+  transform: none;
+  opacity: 1;
+  background-image: radial-gradient(ellipse at 80% 25%, rgba(51,71,255,0.16), rgba(17,17,16,0) 65%) !important;
+}
+body.low-memory.light .fp-ambient {
+  background-image: radial-gradient(ellipse at 80% 25%, rgba(51,71,255,0.1), rgba(245,244,239,0) 65%) !important;
+}
+body.low-memory .p-logo,
+body.low-memory .sv-logo {
+  -webkit-filter: none;
+  filter: none;
+}
