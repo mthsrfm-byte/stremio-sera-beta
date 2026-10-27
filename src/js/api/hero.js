@@ -4,6 +4,7 @@ import * as store from '../lib/store.js';
 import { fetchMeta } from './addons.js';
 import { hasTmdb, tmdbFind } from './extras.js';
 import { getJSONViaProxy } from './server.js';
+import { smallBackground } from '../lib/img.js';
 
 export const SOURCES = [
   { id: 'cinemeta', name: 'Cinemeta · Populares' },
@@ -36,7 +37,7 @@ function fromMeta(m) {
     genres: m.genres || m.genre || [],
     rating: m.imdbRating || '',
     runtime: m.runtime || '',
-    background: m.background || background(m.id || m.imdb_id),
+    background: store.settings().lowMemory !== false ? smallBackground(m.background || background(m.id || m.imdb_id)) : m.background || background(m.id || m.imdb_id),
     logo: m.logo || logo(m.id || m.imdb_id),
     poster: m.poster,
   };
@@ -104,7 +105,7 @@ export function saverItems() {
 }
 
 export function load() {
-  return loadRaw().then((items) => localize(items.slice(0, 12)));
+  return loadRaw().then((items) => localize(items.slice(0, store.settings().lowMemory !== false ? 4 : 12)));
 }
 
 function loadRaw() {

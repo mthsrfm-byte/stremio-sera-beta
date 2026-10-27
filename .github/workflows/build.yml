@@ -25,7 +25,8 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm test
       - name: Build
         env:
           # Chaves opcionais embutidas no app (Settings → Secrets and variables → Actions).
@@ -42,9 +43,23 @@ jobs:
           export KAI_COMMIT_MSG="$MSG"
           npm run build
 
+      - name: Preparar motor para teste em Node 12
+        run: node tools/build-engine-test.mjs "$RUNNER_TEMP/sera-engine.cjs"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 12.4.0
+
+      - name: Verificar serviço e torrent em Node 12.4.0
+        env:
+          SERA_ENGINE_BUNDLE: ${{ runner.temp }}/sera-engine.cjs
+        run: |
+          node tests/node12-service-smoke.cjs
+          node tests/torrent-engine-node12.cjs
+
       - name: Commit da dist/ se mudou
         run: |
-          git add -A dist
+          git add -A dist remote/tv-service.js
           # Push feito com o GITHUB_TOKEN não dispara a Action de novo, então não entra em loop.
           if git diff --cached --quiet; then
             echo "dist/ já está em dia."

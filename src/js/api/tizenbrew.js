@@ -1,7 +1,7 @@
 // Conversa com o TizenBrew (WebSocket em 127.0.0.1:8081, o mesmo que a tela dele usa).
-// O TizenBrew baixa o serviço do Seraflix do jsDelivr sem versão, e o cache do CDN pode entregar
+// O TizenBrew baixa o serviço do Seraflix Beta do jsDelivr sem versão, e o cache do CDN pode entregar
 // um arquivo velho por horas. Aqui pedimos para ele ligar o serviço num commit exato: o novo
-// assume a porta dos addons (8091) mesmo com o antigo ainda rodando.
+// assume a porta dos addons da beta (8095) mesmo com o antigo ainda rodando.
 import { getJSON } from '../lib/http.js';
 import { log } from '../lib/log.js';
 import { REPO, BUILD } from './update.js';

@@ -4,7 +4,7 @@
 // GitHub Action) e recarrega o app apontando para esse commit exato, sem esperar o cache do jsDelivr.
 import { getJSON } from '../lib/http.js';
 
-export const REPO = 'mthsrfm-byte/stremio-sera';
+export const REPO = 'mthsrfm-byte/stremio-sera-beta';
 export const REPO_URL = 'https://github.com/' + REPO;
 export const VERSION = __KAI_VERSION__;
 

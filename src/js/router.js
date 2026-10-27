@@ -22,7 +22,7 @@ function show(view) {
   // Aba recém-aberta pela barra: foco na própria aba (antes ia para "Início", que parecia a ativa),
   // a não ser que a tela peça outro ponto de partida (data-autofocus, ex.: campo da Busca).
   const activeTab = view.tabId && !view.el.querySelector('[data-autofocus]') && view.el.querySelector('.topbar .tab.active');
-  if (view.restoreFocus && document.body.contains(view.restoreFocus)) nav.focus(view.restoreFocus, { noScroll: true });
+  if (view.restoreFocus && view.el.contains(view.restoreFocus) && document.body.contains(view.restoreFocus)) nav.focus(view.restoreFocus, { noScroll: true });
   else if (activeTab) nav.focus(activeTab, { noScroll: true }); // aba recém-aberta: foco na própria aba
   else nav.focusFirst(view.el);
   if (view.onShow) view.onShow();
@@ -79,9 +79,23 @@ export function back() {
 
 // Troca de aba principal: limpa a pilha e mostra a aba (mantida viva).
 export function goTab(id) {
-  while (stack.length > 1) pop();
+  // Trocar de aba não precisa reexibir cada detalhe intermediário. pop() chamava
+  // onShow() nessas telas e disparava novas buscas só para ocultá-las em seguida.
+  while (stack.length > 1) {
+    const leaving = stack.pop();
+    hide(leaving);
+    leaving.restoreFocus = null;
+    if (!leaving.keepAlive) {
+      if (leaving.destroy) leaving.destroy();
+      if (leaving.el.parentNode) leaving.el.parentNode.removeChild(leaving.el);
+    }
+  }
   const cur = stack[0];
-  if (cur && cur.tabId === id) return;
+  if (cur && cur.tabId === id) {
+    // A aba-base estava escondida enquanto os detalhes/player estavam na pilha.
+    if (!cur.layer || cur.el.classList.contains('hidden')) show(cur);
+    return;
+  }
   let view = tabs[id];
   if (!view) {
     view = registry[id]();
@@ -117,6 +131,7 @@ export function dropTab(id) {
   const v = tabs[id];
   if (!v) return;
   delete tabs[id];
+  v.restoreFocus = null;
   if (v.destroy) v.destroy();
   if (v.el.parentNode && stack.indexOf(v) < 0) v.el.parentNode.removeChild(v.el);
   if (v.layer) nav.popLayer(v.layer);

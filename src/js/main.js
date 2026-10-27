@@ -36,6 +36,7 @@ function boot() {
   const s = store.settings();
   initI18n();
   applyTheme(s);
+  document.body.classList.toggle('low-memory', s.lowMemory !== false);
   introDone = intro.play(s.introSound !== false);
   if (s.devlogUrl) log.setRemote(s.devlogUrl);
   log.info('Iniciando', navigator.userAgent);
@@ -44,7 +45,7 @@ function boot() {
   nav.install();
   if (IS_WEB) webkeys.install(); // F e duplo clique no vídeo: tela cheia (só no navegador)
   // Imagens e fileiras sob demanda depois que a rolagem para (segurar a seta não recalcula a cada passo).
-  nav.setSmooth(s.smoothScroll);
+  nav.setSmooth(s.lowMemory === false && s.smoothScroll);
   let scrollTimer = null;
   nav.onScroll((node) => {
     clearTimeout(scrollTimer);
@@ -87,6 +88,7 @@ function start() {
   stremio.reloadProfile();
   const s = store.settings();
   applyTheme(s);
+  document.body.classList.toggle('low-memory', s.lowMemory !== false);
   log.info('Perfil', store.activeProfile().name);
 
   // Atualiza a conta em segundo plano; a tela inicial abre com o cache.

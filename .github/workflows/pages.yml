@@ -5,9 +5,6 @@
 name: Publicar site no GitHub Pages
 
 on:
-  push:
-    branches: [main]
-    paths: ['remote/**', 'src/**', 'tools/**', 'package.json', 'package-lock.json', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -30,7 +27,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       - name: Build do app web
         env:

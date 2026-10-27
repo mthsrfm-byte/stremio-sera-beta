@@ -520,7 +520,7 @@ function DetailsView(type, id, opts) {
     let autoFocused = null;
     let serverOk = server.isAvailable();
     function status() {
-      const srv = serverOk ? t('Servidor do PC conectado') : t('Servidor do PC não conectado: só links diretos');
+      const srv = server.nativeEnabled() ? t('Torrent na própria TV · experimental') : serverOk ? t('Servidor externo conectado') : t('Servidor externo não conectado: só links diretos');
       sub.textContent = srv + (pendingCount > 0 ? '  ·  ' + t('{n} addon(s) ainda carregando', { n: pendingCount }) : '  ·  ' + t('{n} fontes', { n: all.length }));
       barFill.style.width = Math.round(((srcs.length - pendingCount) / srcs.length) * 100) + '%';
       loadBar.classList.toggle('done', pendingCount <= 0);
@@ -617,12 +617,12 @@ function DetailsView(type, id, opts) {
     const heavy = heavyMbps(info);
     if (heavy) tags.push(h('span.s-tag.warn', { text: t('Pesado · ~{n} Mbps', { n: heavy }) }));
     if (!playableType) tags.push(h('span.s-tag.warn', { text: t('Não suportado na TV') }));
-    else if (needs && !serverOk) tags.push(h('span.s-tag.warn', { text: t('Precisa do PC') }));
+    else if (needs && !serverOk) tags.push(h('span.s-tag.warn', { text: t('Precisa de servidor externo') }));
     const stats = h('div.s-stats', null, [
       info.seeders !== null ? h('span.s-seed', { cls: 'lv' + si.signal(info.seeders), html: si.signalSvg(si.signal(info.seeders)) + '<b>' + info.seeders + '</b>' }) : null,
       info.cached ? h('span.s-seed.lv4', { html: si.signalSvg(4) + '<b>' + t('Instantâneo') + '</b>' }) : null,
       info.sizeMb ? h('span.s-size', { text: si.sizeText(info.sizeMb) }) : null,
-      h('span.s-src', { text: info.addon + (needs ? ' · torrent' : playableType ? ' · ' + t('direto') : '') }),
+      h('span.s-src', { text: info.addon + (server.isTorrent(s) ? ' · ' + t(server.nativeEnabled() ? 'torrent na TV' : 'torrent') : playableType ? ' · ' + t('direto') : '') }),
     ]);
     return h(
       'div.stream',
@@ -631,7 +631,7 @@ function DetailsView(type, id, opts) {
         cls: (disabled ? 'disabled' : '') + (info.dub ? ' dub' : ''),
         onSelect: () => {
           if (!playableType) return toast(t('Esse tipo de fonte não abre na TV.'));
-          if (needs && !serverOk) return toast(t('Torrent precisa do stremio-service rodando no PC. Configure em Ajustes.'), 5000);
+          if (needs && !serverOk) return toast(t('Esta fonte precisa do servidor externo. Configure em Ajustes.'), 5000);
           play(video, s, all);
         },
       },

@@ -97,6 +97,13 @@ function WizardView() {
   }
 
   function stepServer() {
+    if (server.nativeEnabled()) {
+      card.appendChild(h('h1', { text: t('Torrent na própria TV — beta') }));
+      card.appendChild(h('p', { text: t('Esta beta tenta reproduzir torrents na Samsung, sem debrid e sem computador ligado. Use uma fonte compatível com a TV. A estabilidade ainda precisa ser testada neste aparelho.') }));
+      card.appendChild(h('p', { text: t('O modo leve já está ligado. Você pode mudar para um servidor externo depois em Ajustes.') }));
+      card.appendChild(h('div.actions', { 'data-group': '' }, [btn(t('Continuar com torrent na TV'), true, next)]));
+      return;
+    }
     card.appendChild(h('h1', { text: t('Servidor de torrents no PC') }));
     const status = h('p', {
       text: server.isAvailable()

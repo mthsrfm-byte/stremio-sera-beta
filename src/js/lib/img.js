@@ -32,6 +32,8 @@ export function smallThumb(url) {
 // O endereço da versão pequena tem outro hash, então vem da API (um pedido por lote de até 20).
 const KITSU_RE = /(?:media\.kitsu\.app|kitsu-production-media\.[^/]+)\/anime\/(?:poster_images\/)?(\d+)\/(poster_image|cover_image)\/(?!small-|tiny-|medium-|large-)/;
 const kitsuCache = {}; // "id:kind" -> Promise<url|null>
+const kitsuOrder = [];
+const KITSU_CACHE_LIMIT = 160;
 let batch = {};
 let batchTimer = null;
 
@@ -72,6 +74,9 @@ export function kitsuSmall(info) {
       (batch[info.id] = batch[info.id] || []).push({ kind: info.kind, resolve: resolve });
       if (!batchTimer) batchTimer = setTimeout(flush, 60);
     });
+    kitsuOrder.push(key);
+    // Guarda só uma janela dos últimos títulos; navegar por horas não acumula Promises.
+    while (kitsuOrder.length > KITSU_CACHE_LIMIT) delete kitsuCache[kitsuOrder.shift()];
   }
   return kitsuCache[key];
 }

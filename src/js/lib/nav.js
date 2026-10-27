@@ -159,7 +159,8 @@ export function ensureVisible(el) {
 
 export function focus(el, opts) {
   const layer = top();
-  if (!layer || !el) return;
+  // Respostas assíncronas de uma tela antiga nunca podem roubar o foco da atual.
+  if (!layer || !el || !layer.root.contains(el)) return;
   const prev = layer.current;
   if (prev && prev !== el) {
     prev.classList.remove('focused');
@@ -207,11 +208,12 @@ export function move(dir) {
   // Telas com [data-stay] (categorias da NSFW) não mandam o foco para a barra de cima: subir na
   // última fileira fica nela. Quem sai é o Voltar.
   const stay = cur.closest('[data-stay]') && !cur.closest('.topbar');
-  const all = candidates(layer.root).filter((e) => e !== cur && !(stay && e.closest('.topbar')));
   const group = cur.closest('[data-group]');
   const horizontal = dir === 'left' || dir === 'right';
   if (group && horizontal === !group.hasAttribute('data-vertical')) {
-    const inGroup = all.filter((e) => group.contains(e));
+    // Esquerda/direita normalmente ficam na fileira: não mede centenas de capas
+    // das outras fileiras a cada tecla (cada offsetParent/rect pode forçar layout).
+    const inGroup = candidates(group).filter((e) => e !== cur);
     const g = pick(inGroup, cur, dir);
     if (g) {
       focus(g);
@@ -219,6 +221,7 @@ export function move(dir) {
     }
     if (group.hasAttribute('data-trap')) return false;
   }
+  const all = candidates(layer.root).filter((e) => e !== cur && !(stay && e.closest('.topbar')));
   let best = pick(all, cur, dir);
   if (!best) return false;
   const bg = best.closest('[data-group]');
@@ -252,9 +255,16 @@ export function pushLayer(root, handlers) {
 export function popLayer(layer) {
   const i = layers.indexOf(layer);
   if (i >= 0) layers.splice(i, 1);
+  if (layer && layer.root) {
+    $$('[data-scroll-x], [data-scroll-y]', layer.root).forEach((node) => {
+      if (node.__anim) cancelAnimationFrame(node.__anim);
+      node.__anim = null;
+    });
+  }
   const t = top();
   if (t && t.current) {
-    t.current.classList.add('focused');
+    if (t.root.contains(t.current)) t.current.classList.add('focused');
+    else t.current = null;
   }
 }
 

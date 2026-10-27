@@ -7,7 +7,7 @@ import * as subpick from '../lib/subpick.js';
 import * as substyle from '../lib/substyle.js';
 import * as store from '../lib/store.js';
 import { log } from '../lib/log.js';
-import { getText, getJSON } from '../lib/http.js';
+import { getText, getJSON, clearCache } from '../lib/http.js';
 import * as si from '../lib/streaminfo.js';
 import * as hlsplay from '../lib/hlsplay.js';
 import * as calendar from '../api/calendar.js';
@@ -154,6 +154,11 @@ function PlayerView(opts) {
   let statusTimer = null;
   let mediaUrl = '';
   let viaServer = false;
+  let viaNative = false;
+  let nativeSessionId = '';
+  let startGeneration = 0;
+  let slowProbeTimer = null;
+  const playingWaiters = [];
   let lastTick = 0;
   let watchedDelta = 0;
   let pendingStart = opts.startTime || 0;
@@ -200,12 +205,44 @@ function PlayerView(opts) {
   }
 
   // ---------- Carregamento ----------
+  function releaseNative() {
+    const sessionId = nativeSessionId;
+    nativeSessionId = '';
+    if (sessionId) server.stopNative(sessionId);
+  }
+
   function start() {
+    const generation = ++startGeneration;
+    const selectedStream = stream;
+    releaseNative();
+    playingWaiters.slice().forEach((done) => done());
+    clearTimeout(slowProbeTimer);
+    // Libera imagens, trailers e respostas dos catálogos ANTES de criar o motor torrent.
+    freeBackgroundMemory();
+    dropSource();
+    try {
+      videoEl.pause();
+      videoEl.removeAttribute('src');
+      videoEl.load();
+    } catch (e) { /* player antigo pode não permitir load sem src */ }
+    mediaUrl = '';
+    viaServer = false;
+    viaNative = false;
+    hasPlayed = false;
+    gaveUp = false;
+    recoveries = 0;
+    stuckSince = 0;
+    slowExtensions = 0;
     setTitle();
-    if (!stream) return waitForPick();
-    armSlow();
+    if (!selectedStream) return waitForPick();
+    const local = server.nativeEnabled() && server.isTorrent(selectedStream);
+    const sessionId = local ? server.createNativeSessionId() : '';
+    nativeSessionId = sessionId;
+    const current = () => alive && generation === startGeneration && stream === selectedStream;
+    armSlow(local ? 70000 : SLOW_MS);
     showSpinner(true);
     message('');
+    if (local) introStatus.textContent = t('Preparando torrent na própria TV');
     embedded = null;
     tracksPromise = null;
     addonSubs = null;
@@ -215,22 +252,28 @@ function PlayerView(opts) {
     segmentsLoaded = false;
     hideSkip();
     server
-      .toPlayable(stream, seriesInfo())
+      .toPlayable(selectedStream, seriesInfo(), { sessionId: sessionId, isCurrent: current })
       .then((res) => {
-        if (!alive) return;
+        if (!current()) {
+          if (res.sessionId) server.stopNative(res.sessionId);
+          return;
+        }
         mediaUrl = res.url;
         viaServer = res.viaServer;
+        viaNative = !!res.viaNative;
+        nativeSessionId = res.sessionId || '';
         log.info('Tocando', mediaUrl);
-        // Só src + autoplay, como o player oficial do Stremio para TV: load()/play() extras
-        // faziam a TV abrir o stream duas vezes.
-        hasPlayed = false;
+        // Só src + autoplay evita abrir a mesma fonte duas vezes no player da Samsung.
         setSource(mediaUrl);
-        freeBackgroundMemory();
+        armSlow();
         loadSubtitles();
-        // Faixas embutidas só quando o usuário abre o menu: o ffprobe do servidor lê o arquivo
-        // e, num torrent, rouba prioridade do trecho que está tocando.
+        // Faixas embutidas só quando o usuário abre o menu; o torrent local não executa ffprobe.
       })
-      .catch((e) => fail(e.message));
+      .catch((e) => {
+        if (!current() || e.cancelled) return;
+        releaseNative();
+        fail(e.message);
+      });
   }
 
   // Põe a URL no <video>: HLS (.m3u8) pelo hls.js, o resto direto. O resto continua só src +
@@ -250,7 +293,7 @@ function PlayerView(opts) {
     hlsplay
       .attach(videoEl, url, (why) => {
         if (alive && token === sourceToken) playbackError(null, why);
-      })
+      }, () => alive && token === sourceToken)
       .then((ctl) => {
         if (!alive || token !== sourceToken) return ctl && ctl.destroy();
         if (ctl) hlsCtl = ctl;
@@ -259,6 +302,7 @@ function PlayerView(opts) {
   }
   function dropSource() {
     sourceToken++;
+    sourceUrl = '';
     if (hlsCtl) hlsCtl.destroy();
     hlsCtl = null;
   }
@@ -341,7 +385,7 @@ function PlayerView(opts) {
 
   let tracksPromise = null;
   function loadEmbeddedTracks() {
-    if (!server.isAvailable()) return Promise.resolve(null);
+    if (viaNative || !server.isAvailable()) return Promise.resolve(null);
     if (!tracksPromise) {
       const forUrl = mediaUrl;
       tracksPromise = server
@@ -366,18 +410,19 @@ function PlayerView(opts) {
   function loadSubtitles() {
     const forVideo = video;
     const forUrl = mediaUrl;
+    const forStream = stream;
     addonSubs = null;
     subsSettled = false;
     // Torrent pelo PC: o hash lê o fim do arquivo e faria o servidor baixar essa parte antes do
     // começo. Espera o vídeo começar (ou 60s) para não atrasar o play.
     const ready = viaServer && !hasPlayed ? untilPlaying(60000) : Promise.resolve();
     ready
-      .then(() => subpick.videoInfo(stream, mediaUrl, server))
+      .then(() => alive && forVideo === video && forUrl === mediaUrl ? subpick.videoInfo(forStream, forUrl, server) : null)
       .then((info) => {
-        if (!alive || forVideo !== video || forUrl !== mediaUrl) return;
+        if (!alive || !info || forVideo !== video || forUrl !== mediaUrl) return;
         fileInfo = info;
         const settle = () => {
-          if (!alive || forVideo !== video || subsSettled) return;
+          if (!alive || forVideo !== video || forUrl !== mediaUrl || subsSettled) return;
           subsSettled = true;
           if (!addonSubs) addonSubs = [];
           autoPick();
@@ -385,7 +430,7 @@ function PlayerView(opts) {
         setTimeout(settle, 6000);
         addons
           .fetchSubtitles(meta.type, video.id, subpick.extra(info), (list) => {
-            if (!alive || forVideo !== video) return;
+            if (!alive || forVideo !== video || forUrl !== mediaUrl) return;
             addonSubs = (addonSubs || []).concat(list);
           })
           .then(settle, settle);
@@ -397,9 +442,12 @@ function PlayerView(opts) {
       const done = () => {
         videoEl.removeEventListener('playing', done);
         clearTimeout(timer);
+        const i = playingWaiters.indexOf(done);
+        if (i >= 0) playingWaiters.splice(i, 1);
         ok();
       };
       const timer = setTimeout(done, maxMs);
+      playingWaiters.push(done);
       videoEl.addEventListener('playing', done);
     });
   }
@@ -525,7 +573,7 @@ function PlayerView(opts) {
 
   // Áudio preferido configurado: lê as faixas uma vez, 20s depois de o vídeo começar.
   function scheduleAudioPick() {
-    if (!(settings.audioLangs || []).length || !server.isAvailable()) return;
+    if (viaNative || !(settings.audioLangs || []).length || !server.isAvailable()) return;
     setTimeout(() => {
       if (alive && hasPlayed) loadEmbeddedTracks().then(() => autoPick());
     }, 20000);
@@ -597,8 +645,9 @@ function PlayerView(opts) {
     if (!alive || errorToken === sourceToken) return;
     errorToken = sourceToken;
     const failed = stream;
+    const generation = startGeneration;
     errorDetails(code, why).then((details) => {
-      if (!alive || failed !== stream) return;
+      if (!alive || generation !== startGeneration || failed !== stream) return;
       const next = autoFallback();
       if (next) {
         failedNotes.push(details);
@@ -608,7 +657,7 @@ function PlayerView(opts) {
         return;
       }
       if (failedNotes.length) details = failedNotes.concat(details).join('\n');
-      if (!triedTranscode && server.isAvailable()) {
+      if (!viaNative && !triedTranscode && server.isAvailable()) {
         fail(t('A TV não conseguiu tocar este arquivo diretamente.'), true, details);
       } else fail(t('A TV não conseguiu tocar este arquivo (formato ou codec não suportado).'), false, details);
     });
@@ -805,8 +854,11 @@ function PlayerView(opts) {
 
   // Memória: pede para a tela inicial soltar as fileiras enquanto o vídeo toca.
   function freeBackgroundMemory() {
-    const home = router.tabView('home');
-    if (home && home.freeMemory) home.freeMemory();
+    ['home', 'recommended', 'streamings'].forEach((id) => {
+      const view = router.tabView(id);
+      if (view && view.freeMemory) view.freeMemory();
+    });
+    if (settings.lowMemory !== false) clearCache();
   }
   let stuckSince = 0;
   let recoveries = 0;
@@ -844,6 +896,7 @@ function PlayerView(opts) {
   }
 
   function reopenAt(pos) {
+    const generation = startGeneration;
     showSpinner(true);
     toast(t('Reconectando ao vídeo...'));
     pendingStart = Math.max(0, pos - 1) * 1000;
@@ -858,7 +911,7 @@ function PlayerView(opts) {
     }
     // Reabre do zero: o ponto certo é aplicado no loadedmetadata e o play vem depois do seek.
     setTimeout(() => {
-      if (!alive) return;
+      if (!alive || generation !== startGeneration) return;
       hasPlayed = false;
       setSource(src);
     }, 300);
@@ -866,16 +919,25 @@ function PlayerView(opts) {
 
   // Erro: um painel só, com o motivo legível (sem endereço técnico no meio) e as saídas em botões.
   function fail(text, offerTranscode, details) {
+    gaveUp = true;
+    if (viaNative || nativeSessionId) {
+      releaseNative();
+      dropSource();
+      try { videoEl.pause(); } catch (e) { /* ignore */ }
+    }
     hideIntro();
     clearTimeout(slowTimer);
     closeSlow();
     showSpinner(false);
     clear(msgEl);
     const reason = String(text || '').replace(/[.!\s]+$/, '').replace(/https?:\/\/\S+/g, (u) => (/:11470\b/.test(u) ? t('o servidor do PC') : t('o servidor')));
-    const torrent = stream && server.needsServer(stream);
-    const tip = torrent
-      ? t('Esse torrent pode estar sem seeders ou o PC está lento para começar. Tente outra fonte.')
-      : t('Tente outra fonte (de preferência MP4/MKV com H.264 ou HEVC e áudio AAC/AC3).');
+    const torrent = server.isTorrent(stream);
+    const local = torrent && server.nativeEnabled();
+    const tip = local
+      ? t('O torrent local depende de peers disponíveis, memória e um formato compatível com a TV. Tente outra fonte.')
+      : torrent
+        ? t('Esse torrent pode estar sem seeders ou o servidor externo está lento para começar. Tente outra fonte.')
+        : t('Tente outra fonte (de preferência MP4/MKV com H.264 ou HEVC e áudio AAC/AC3).');
     const buttons = [{ label: '<span class="ico">⇄</span>' + t('Escolher outra fonte'), primary: true, onSelect: () => sourcesMenu() }];
     if (offerTranscode) buttons.push({ label: t('Converter no PC'), onSelect: () => transcode() });
     buttons.push({ label: t('Voltar'), onSelect: () => router.pop() });
@@ -883,6 +945,7 @@ function PlayerView(opts) {
   }
 
   function transcode() {
+    if (viaNative) return toast(t('O torrent local não converte codecs. Escolha outra fonte compatível com a TV.'));
     triedTranscode = true;
     const base = server.baseUrl();
     const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -967,7 +1030,7 @@ function PlayerView(opts) {
   let introOn = true;
   function setupIntro() {
     requestAnimationFrame(() => requestAnimationFrame(() => introOn && intro.classList.add('in')));
-    const art = meta.background || hero.background(meta.id);
+    const art = settings.lowMemory !== false ? '' : meta.background || hero.background(meta.id);
     if (art) {
       const pre = new Image();
       pre.onload = () => introOn && (introBg.style.backgroundImage = 'url("' + art + '")') && introBg.classList.add('show');
@@ -1072,7 +1135,7 @@ function PlayerView(opts) {
   let pcWanted = '';
   function pcPreview(time, duration) {
     const src = mediaUrl;
-    if (!server.isAvailable() || !/^https?:/.test(src) || !(duration > 0)) {
+    if (viaNative || settings.lowMemory !== false || !server.isAvailable() || !/^https?:/.test(src) || !(duration > 0)) {
       preview.classList.remove('on');
       return false;
     }
@@ -1183,7 +1246,7 @@ function PlayerView(opts) {
   // Sem o arquivo inteiro no PC não dá para extrair a faixa; o player HTML5 da TV não mostra
   // legenda embutida sozinho (falta o player nativo da Samsung, AVPlay).
   function nativeEmbeddedSub() {
-    toast(t('Essa legenda embutida só aparece com o arquivo inteiro baixado no PC. Tente uma legenda dos addons.'), 5000);
+    toast(t(viaNative ? 'No torrent local, escolha uma legenda externa dos addons.' : 'Essa legenda embutida só aparece com o arquivo inteiro baixado no servidor externo. Tente uma legenda dos addons.'), 5000);
   }
 
   function selectAddonSub(s, silent) {
@@ -1199,7 +1262,7 @@ function PlayerView(opts) {
 
   // Menus de faixas: lê as faixas embutidas só agora, quando o usuário pede.
   function withTracks(open) {
-    if (embedded || !server.isAvailable()) return open();
+    if (embedded || viaNative || !server.isAvailable()) return open();
     toast(t('Lendo as faixas do arquivo...'), 2500);
     loadEmbeddedTracks().then(() => alive && open());
   }
@@ -1224,7 +1287,7 @@ function PlayerView(opts) {
       }));
     }
     menu(t('Áudio'), list, {
-      empty: server.isAvailable() ? t('Só uma faixa de áudio.') : t('Para listar as faixas, conecte o servidor do PC em Ajustes.'),
+      empty: viaNative ? t('A TV não expõe outras faixas nesta fonte. Tente uma fonte no idioma desejado.') : server.isAvailable() ? t('Só uma faixa de áudio.') : t('Para listar as faixas, conecte o servidor externo em Ajustes.'),
       onPick: (i) => selectEmbeddedAudio(i),
     });
   }
@@ -1461,7 +1524,7 @@ function PlayerView(opts) {
       onPick: (i) => {
         const s = opts.streams[i];
         if (!s || s === stream) return;
-        if (server.needsServer(s) && !server.isAvailable()) return toast(t('Essa fonte precisa do servidor do PC.'));
+        if (server.needsServer(s) && !server.isAvailable()) return toast(t('Essa fonte precisa de um servidor Stremio externo.'));
         switchTo(s);
       },
     });
@@ -1480,28 +1543,36 @@ function PlayerView(opts) {
   }
 
   // ---------- Demorando para carregar: oferece outro provedor ----------
-  function armSlow() {
+  function armSlow(delay) {
     clearTimeout(slowTimer);
     closeSlow();
     slowTimer = setTimeout(() => {
       if (alive && !hasPlayed) checkSlow();
-    }, SLOW_MS);
+    }, typeof delay === 'number' ? delay : SLOW_MS);
   }
 
-  // Torrent que ainda está baixando (o progresso anda) ganha mais tempo, até 3 vezes:
-  // começar um torrent pelo PC pode passar de 40s, e trocar ali só recomeçaria do zero.
+  // Se o torrent ainda está recebendo dados, espera um pouco antes de trocar de fonte.
   let slowExtensions = 0;
   function checkSlow() {
-    if (!viaServer || slowExtensions >= 3) return slowPrompt();
-    server.streamProgress(mediaUrl).then((p1) => {
-      setTimeout(() => {
-        server.streamProgress(mediaUrl).then((p2) => {
-          if (!alive || hasPlayed) return;
+    const generation = startGeneration;
+    const sessionId = nativeSessionId;
+    if ((!viaServer && !viaNative) || slowExtensions >= 3) return slowPrompt();
+    const progress = viaNative
+      ? () => server.nativeStatus().then((r) => {
+          if (!r || r.sessionId !== sessionId) return null;
+          return typeof r.downloadedBytes === 'number' ? r.downloadedBytes : typeof r.downloaded === 'number' ? r.downloaded : null;
+        }, () => null)
+      : () => server.streamProgress(mediaUrl);
+    progress().then((p1) => {
+      if (!alive || generation !== startGeneration || hasPlayed) return;
+      slowProbeTimer = setTimeout(() => {
+        progress().then((p2) => {
+          if (!alive || generation !== startGeneration || hasPlayed) return;
           if (p1 !== null && p2 !== null && p2 > p1) {
             slowExtensions++;
-            message(t('Ainda baixando pelo PC ({pct}% do arquivo)...', { pct: Math.round(p2 * 100) }));
+            message(viaNative ? t('O torrent está recebendo dados na própria TV...') : t('Ainda baixando no servidor externo ({pct}% do arquivo)...', { pct: Math.round(p2 * 100) }));
             clearTimeout(slowTimer);
-            slowTimer = setTimeout(() => alive && !hasPlayed && checkSlow(), 20000);
+            slowTimer = setTimeout(() => alive && generation === startGeneration && !hasPlayed && checkSlow(), 20000);
           } else slowPrompt();
         });
       }, 4000);
@@ -1548,20 +1619,24 @@ function PlayerView(opts) {
       () => true,
       () => false
     );
-    const srv = server.needsServer(stream) ? server.check().then((r) => !!(r && r.ok), () => false) : Promise.resolve(true);
+    const local = server.nativeEnabled() && server.isTorrent(stream);
+    const srv = local
+      ? server.nativeStatus().then((r) => !!r && r.supported !== false && r.available !== false, () => false)
+      : server.needsServer(stream) ? server.check().then((r) => !!(r && r.ok), () => false) : Promise.resolve(true);
     return Promise.all([net, srv]).then((r) => ({ internet: r[0], server: r[1] }));
   }
 
   function tryAnother() {
+    const generation = startGeneration;
     showSpinner(true);
     message(t('Testando a conexão...'));
     connectionOk().then((c) => {
-      if (!alive || hasPlayed) return;
+      if (!alive || generation !== startGeneration || hasPlayed) return;
       if (!c.internet || !c.server) {
         message('');
         showSpinner(false);
         menu(
-          !c.internet ? t('A internet da TV parece fora do ar') : t('O servidor do PC não está respondendo'),
+          !c.internet ? t('A internet da TV parece fora do ar') : server.nativeEnabled() && server.isTorrent(stream) ? t('O motor torrent local da TV não está respondendo') : t('O servidor externo não está respondendo'),
           [
             { label: t('Esperar e tentar de novo'), sub: t('Reabre a mesma fonte'), value: 'retry', checked: true },
             { label: t('Escolher outra fonte'), value: 'src' },
@@ -1597,14 +1672,15 @@ function PlayerView(opts) {
 
   // Próximo episódio: mantém o mesmo "bingeGroup" (mesma qualidade/fonte) quando possível.
   function playNext() {
+    const generation = startGeneration;
     const nv = nextVideo();
     if (!nv) return;
     saveProgress();
-    const group = stream.behaviorHints && stream.behaviorHints.bingeGroup;
+    const group = stream && stream.behaviorHints && stream.behaviorHints.bingeGroup;
     showSpinner(true);
     message(t('Procurando o próximo episódio...'));
     addons.fetchStreams(meta.type, nv.id).then((list) => {
-      if (!alive) return;
+      if (!alive || generation !== startGeneration) return;
       const match = group ? list.find((s) => s.behaviorHints && s.behaviorHints.bingeGroup === group) : null;
       if (match && (!server.needsServer(match) || server.isAvailable())) {
         video = nv;
@@ -1745,6 +1821,13 @@ function PlayerView(opts) {
     },
     destroy: () => {
       alive = false;
+      startGeneration++;
+      releaseNative();
+      playingWaiters.slice().forEach((done) => done());
+      clearTimeout(slowProbeTimer);
+      clearTimeout(pcTimer);
+      pcWanted = '';
+      renderer.clear();
       clearInterval(ticker);
       clearInterval(saveTimer);
       clearInterval(watchTimer);

@@ -3,7 +3,8 @@
 // O que é da TV (servidor do PC, chaves de API, rolagem) fica compartilhado entre os perfis.
 import { current } from './i18n.js';
 
-const PREFIX = 'kai.';
+// A beta mantém contas e preferências separadas da instalação estável.
+const PREFIX = 'sera.beta.';
 
 function rawGet(key, fallback) {
   try {
@@ -114,10 +115,12 @@ export function set(key, value) {
 
 // ---------- Preferências ----------
 // Da TV (iguais para todos os perfis):
-const DEVICE_KEYS = ['introSound', 'serverUrl', 'tmdbKey', 'mdblistKey', 'smoothScroll', 'devlogUrl', 'lastUpdateCheck', 'askProfile', 'wizardDone', 'language', 'screensaver'];
+const DEVICE_KEYS = ['lowMemory', 'nativeTorrent', 'introSound', 'serverUrl', 'tmdbKey', 'mdblistKey', 'smoothScroll', 'devlogUrl', 'lastUpdateCheck', 'askProfile', 'wizardDone', 'language', 'screensaver'];
 
 const DEFAULT_SETTINGS = {
   // TV
+  lowMemory: true, // reduz tarefas de fundo para reservar memória ao player/torrent
+  nativeTorrent: true, // motor experimental na própria TV; não requer servidor externo
   serverUrl: '',
   tmdbKey: '', // vazio = usa a chave embutida no build (BUILTIN_KEYS em api/extras.js), se houver
   mdblistKey: '',

@@ -1,10 +1,10 @@
 // Controle pelo celular: o serviço do Seraflix (remote/tv-service.js) serve o controle em
-// http://IP-DA-TV:8090. Aqui o app descobre esse endereço e desenha o QR code para a câmera.
+// http://IP-DA-TV:8094. Aqui o app descobre esse endereço e desenha o QR code para a câmera.
 import qrcode from 'qrcode-generator';
 import { getJSON } from '../lib/http.js';
 import { getTvIp } from '../lib/tv.js';
 
-const PORT = 8090;
+const PORT = 8094;
 
 // O serviço sabe o IP de verdade (pelas interfaces de rede da TV); se ele não responder,
 // tenta pelo app (webapis/WebRTC).

@@ -6,8 +6,8 @@ import * as nav from '../lib/nav.js';
 import * as store from '../lib/store.js';
 import { t } from '../lib/i18n.js';
 
-const SESSION_PICKED = 'kai.profilePicked';
-const SESSION_NEW = 'kai.newProfile';
+const SESSION_PICKED = 'sera.beta.profilePicked';
+const SESSION_NEW = 'sera.beta.newProfile';
 
 function session(key, value) {
   try {

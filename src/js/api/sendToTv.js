@@ -2,7 +2,7 @@
 // (remote/tv-service.js) guarda o pedido. Aqui o app pergunta por ele de tempos em tempos e abre.
 import { getJSON } from '../lib/http.js';
 
-const URL = 'http://127.0.0.1:8090/api/pending';
+const URL = 'http://127.0.0.1:8094/api/pending';
 const FAST = 2500;
 const SLOW = 15000; // serviço fora do ar: pergunta menos
 

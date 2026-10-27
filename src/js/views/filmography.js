@@ -10,6 +10,8 @@ import { qrDataUrl } from '../api/phoneRemote.js';
 import { spinnerLine } from '../ui.js';
 import { openItem } from './recommended.js';
 import { t } from '../lib/i18n.js';
+import * as store from '../lib/store.js';
+import { smallPoster } from '../lib/img.js';
 
 // Ícones das redes (traço em currentColor, como os da barra).
 const NET_ICON = {
@@ -93,8 +95,9 @@ function FilmographyView(person) {
   let info = null;
   let filter = 'all';
   let newestFirst = true;
+  let alive = true;
 
-  setPhoto(person.photo ? person.photo.replace('/w185/', '/h632/') : null);
+  setPhoto(person.photo ? person.photo.replace('/w185/', store.settings().lowMemory !== false ? '/w185/' : '/h632/') : null);
   bioEl.appendChild(spinnerLine(t('Carregando bio...')));
 
   function setPhoto(url) {
@@ -232,6 +235,7 @@ function FilmographyView(person) {
   }
 
   function renderGrid() {
+    if (!alive) return;
     clear(grid);
     scroller.scrollTop = 0;
     const shown = items.filter((it) => filter === 'all' || it.mediaType === filter);
@@ -241,10 +245,16 @@ function FilmographyView(person) {
       grid.appendChild(h('div.hint', { text: t('Nada por aqui.') }));
       return;
     }
-    shown.forEach((it) => {
+    let count = 0;
+    const batchSize = store.settings().lowMemory !== false ? 48 : 96;
+    function appendBatch(enter) {
+      const start = count;
+      const batch = shown.slice(count, count + batchSize);
+      count += batch.length;
+      batch.forEach((it) => {
       const poster = h('div.fp-poster');
       const im = h('img', { alt: '' });
-      im.setAttribute('data-lazy', it.poster);
+      if (it.poster) im.setAttribute('data-lazy', smallPoster(it.poster));
       im.onerror = () => {
         im.style.display = 'none';
         poster.classList.add('img-loaded');
@@ -260,14 +270,25 @@ function FilmographyView(person) {
           h('div.fp-item-role', { text: role(it.character) }),
         ])
       );
-    });
-    loadVisibleImages(panel, 600);
+      });
+      if (count < shown.length) {
+        const more = h('div.btn', { focusable: true, text: t('Carregar mais'), onSelect: () => {
+          grid.removeChild(more);
+          appendBatch(true);
+        } });
+        grid.appendChild(more);
+      }
+      if (enter && grid.children[start]) nav.focus(grid.children[start]);
+      loadVisibleImages(panel, 300);
+    }
+    appendBatch(false);
   }
 
   grid.appendChild(spinnerLine(t('Carregando filmografia...')));
   extras
     .personCredits(person.id)
     .then((list) => {
+      if (!alive) return;
       items = list;
       renderChips();
       renderGrid();
@@ -278,17 +299,20 @@ function FilmographyView(person) {
       }
     })
     .catch(() => {
+      if (!alive) return;
       clear(grid);
       grid.appendChild(h('div.hint', { text: t('Não foi possível carregar a filmografia.') }));
     });
   extras
     .personInfo(person.id)
     .then((i) => {
+      if (!alive) return;
       info = i;
       if (i.photo && !person.photo) setPhoto(i.photo);
       renderInfo();
     })
     .catch(() => {
+      if (!alive) return;
       clear(bioEl);
       bioEl.appendChild(h('div.fp-bio-text.none', { text: t('Não foi possível carregar a bio.') }));
     });
@@ -306,6 +330,14 @@ function FilmographyView(person) {
       }
     },
     onScroll: () => loadVisibleImages(panel, 600),
+    destroy: () => {
+      alive = false;
+      items = null;
+      info = null;
+      clear(photo);
+      clear(grid);
+      ambient.style.backgroundImage = '';
+    },
   };
   return view;
 }

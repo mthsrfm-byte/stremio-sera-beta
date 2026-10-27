@@ -271,22 +271,25 @@ export function SettingsView() {
   // Teste do serviço da TV (remote/tv-service.js): cada item com ✓/✗ e um veredito no fim.
   function torrentTest() {
     toast(t('Testando a TV... leva até 40 segundos'), 6000);
-    getJSON('http://127.0.0.1:8090/api/torrent-test', { timeout: 45000, quiet: true })
+    getJSON('http://127.0.0.1:8094/api/torrent-test', { timeout: 45000, quiet: true })
       .then((r) => {
         const yes = (ok) => (ok ? '✓ ' : '✗ ');
         const nodeMajor = parseInt(String(r.node || 'v0').slice(1), 10) || 0;
+        const available = typeof r.memAvailableMB === 'number' ? r.memAvailableMB : null;
         const disk = r.disk || {};
         const writable = Object.keys(disk).filter((d) => disk[d] === true);
         const lines = [
-          { label: yes(nodeMajor >= 8) + 'Node ' + r.node, sub: nodeMajor >= 8 ? t('Dá para rodar um motor de torrent') : t('Muito antigo para os motores de torrent atuais') },
-          { label: yes(r.memFreeMB >= 150) + t('Memória livre: {n} MB', { n: r.memFreeMB }), sub: t('de {n} MB · {c} núcleos', { n: r.memTotalMB, c: r.cpus }) },
+          { label: yes(nodeMajor >= 12) + 'Node ' + r.node, sub: nodeMajor >= 12 ? t('Compatível com o motor experimental da beta') : t('O motor desta beta precisa de Node 12 ou mais recente') },
+          { label: t('Memória livre: {n} MB', { n: r.memFreeMB }), sub: t('de {n} MB · {c} núcleos', { n: r.memTotalMB, c: r.cpus }) },
+          { label: available === null ? t('Memória disponível: não informada pelo sistema') : t('Memória disponível: {n} MB', { n: available }), sub: t('Inclui cache que o sistema pode recuperar; não garante estabilidade') },
+          { label: t('Processo do serviço: {n} MB', { n: r.processRssMB || 0 }), sub: t('Memória do processo compartilhado com o TizenBrew') },
           { label: yes(r.udp && r.udp.ok) + t('UDP (trackers e DHT)'), sub: r.udp && r.udp.ok ? r.udp.ms + ' ms' : (r.udp && r.udp.why) || '-' },
           { label: yes(r.tcp && r.tcp.ok) + t('TCP de saída (peers)'), sub: r.tcp && r.tcp.ok ? r.tcp.ms + ' ms' : (r.tcp && r.tcp.why) || '-' },
           { label: yes(r.speed && r.speed.ok) + t('Download: {n} Mbps', { n: (r.speed && r.speed.mbps) || 0 }), sub: r.speed && r.speed.ok ? t('{mb} MB em {s} s', { mb: r.speed.MB, s: r.speed.s }) : (r.speed && r.speed.why) || '-' },
           { label: yes(writable.length > 0) + t('Gravar no disco'), sub: writable.length ? writable.join(', ') : t('nenhuma pasta gravável') },
         ];
-        const viable = nodeMajor >= 8 && r.memFreeMB >= 150 && r.tcp && r.tcp.ok && r.speed && r.speed.ok;
-        lines.push({ label: viable ? t('Veredito: dá para tentar torrent na TV') : t('Veredito: a TV não aguenta torrent sozinha'), sub: viable ? t('Me mande uma foto desta tela') : t('Continue com o PC ou use debrid') });
+        const viable = nodeMajor >= 12 && r.tcp && r.tcp.ok;
+        lines.push({ label: viable ? t('Condições básicas presentes: teste a reprodução') : t('Há limitações de versão ou rede a verificar'), sub: t('Este diagnóstico não baixa um torrent real nem garante reprodução estável.') });
         log.info('Teste de torrent na TV', JSON.stringify(r));
         menu(t('Torrent na TV'), lines, {});
       })
@@ -421,7 +424,29 @@ export function SettingsView() {
       );
     }
 
-    body.appendChild(h('div.set-section', { text: t('Servidor de streaming (PC)') }));
+    body.appendChild(h('div.set-section', { text: t('Seraflix Beta') }));
+    body.appendChild(row(t('Modo leve'), t('Reduz imagens, buffers e carregamentos; desliga trailers automáticos. Ativo por padrão nesta beta.'), '', () => {
+      const light = s.lowMemory === false;
+      store.saveSettings({ lowMemory: light });
+      document.body.classList.toggle('low-memory', light);
+      ['home', 'recommended', 'streamings', 'search', 'library', 'nsfw'].forEach((id) => router.dropTab(id));
+      render();
+    }, toggle(s.lowMemory !== false)));
+    if (!IS_WEB) {
+      body.appendChild(row(t('Torrent na própria TV (experimental)'), t('Um torrent por vez, sem Mac e sem debrid. O formato do vídeo e do áudio precisa ser compatível com a Samsung.'), '', () => {
+        store.saveSettings({ nativeTorrent: s.nativeTorrent === false });
+        render();
+      }, toggle(s.nativeTorrent !== false)));
+      body.appendChild(row(t('Estado do torrent local'), t('Mostra peers, cache e memória do motor; nenhum vídeo é iniciado por este botão.'), '', () => {
+        server.nativeStatus().then((r) => menu(t('Torrent local'), [
+          { label: r.supported === false ? t('Versão do Node incompatível') : t('Motor disponível'), sub: r.error || r.state || '' },
+          { label: t('Peers: {n}', { n: r.peers || 0 }), sub: r.file || r.filename || '' },
+          { label: t('Cache: {n} MB', { n: Math.round((r.cacheBytes || 0) / 1048576) }), sub: t('O cache tem limite; isso não é o consumo total do processo.') },
+          { label: t('Memória do serviço: {n} MB', { n: r.processRssMB || 0 }), sub: t('Para o diagnóstico completo, use o teste abaixo.') },
+        ], {})).catch(() => toast(t('Abra a beta pelo TizenBrew para iniciar o serviço da TV.'), 6000));
+      }));
+    }
+    body.appendChild(h('div.set-section', { text: t('Servidor externo (opcional)') }));
     const st = server.lastStatus();
     const stText = !s.serverUrl ? t('não configurado') : st.ok && st.url === server.baseUrl() ? t('conectado ✓') : t('sem resposta');
     const urlInput = h('input.input', { type: 'text', value: s.serverUrl || '', placeholder: 'ex.: 192.168.0.10' });

@@ -287,7 +287,7 @@
   var PIN_HASH = '30dac192d98bf2a553a92153993129f76ec1b0ca0f2b67375cb90f59c986b1f6';
   var SALT = 'seraflix-controle:';
   var AUTH_VERSION = 'v1';
-  var COOKIE = 'sfx_auth';
+  var COOKIE = 'sfx_beta_auth';
   var FOREVER = 60 * 60 * 24 * 400;
 
   function remember() {
@@ -379,13 +379,13 @@
 <script>
 (function () {
   // Dois jeitos de abrir esta página:
-  // - servida pela TV (http://IP-DA-TV:8090, serviço remote/tv-service.js do Seraflix): é o controle.
+  // - servida pela TV (http://IP-DA-TV:8094, serviço remote/tv-service.js do Seraflix): é o controle.
   //   As teclas vão por HTTP para o serviço, que repassa para o controle remoto de rede da TV.
-  // - no GitHub Pages: só um atalho que pergunta o IP e leva para http://IP-DA-TV:8090.
-  var ON_TV = location.protocol === 'http:' && location.port === '8090';
+  // - no GitHub Pages: só um atalho que pergunta o IP e leva para http://IP-DA-TV:8094.
+  var ON_TV = location.protocol === 'http:' && location.port === '8094';
   var store = {
-    get: function (k) { try { return localStorage.getItem('sfx.' + k) || ''; } catch (e) { return ''; } },
-    set: function (k, v) { try { v ? localStorage.setItem('sfx.' + k, v) : localStorage.removeItem('sfx.' + k); } catch (e) {} }
+    get: function (k) { try { return localStorage.getItem('sfx.beta.' + k) || ''; } catch (e) { return ''; } },
+    set: function (k, v) { try { v ? localStorage.setItem('sfx.beta.' + k, v) : localStorage.removeItem('sfx.beta.' + k); } catch (e) {} }
   };
   var $ = function (id) { return document.getElementById(id); };
   var poll = null;
@@ -397,7 +397,7 @@
 
   // ---------- Atalho (GitHub Pages) ----------
   function cleanIp(v) { return String(v || '').trim().replace(/,/g, '.').replace(/^https?:\/\//, '').replace(/[:/].*$/, ''); }
-  function openTv(ip) { location.href = 'http://' + ip + ':8090/'; }
+  function openTv(ip) { location.href = 'http://' + ip + ':8094/'; }
   function showSetup(err) {
     document.body.classList.add('setting');
     $('ip').value = store.get('ip');
@@ -569,7 +569,7 @@
   });
 
   $('changeTv').addEventListener('click', function () {
-    location.href = 'https://mthsrfm-byte.github.io/stremio-sera/controle/?setup=1';
+    location.href = 'https://mthsrfm-byte.github.io/stremio-sera-beta/controle/?setup=1';
   });
 
   function start() {

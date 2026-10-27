@@ -135,6 +135,10 @@ export function NsfwView() {
   let pending = [];
   let active = 0;
   let personalSlot = null;
+  let alive = true;
+  let bodyToken = 0;
+  let loadingAddons = false;
+  let resumeSearch = null;
 
   function scopes() {
     const list = sites();
@@ -170,6 +174,7 @@ export function NsfwView() {
     if (logo) {
       const im = h('img', { alt: '' });
       im.onload = () => {
+        if (!alive) return;
         im.classList.add('ready');
         box.classList.add('img-loaded');
         box.classList.add('has-img');
@@ -198,11 +203,13 @@ export function NsfwView() {
 
   // Parar o foco num site troca o conteúdo (como em Streamings); OK entra nas fileiras.
   function scheduleSwitch(id) {
+    if (!alive) return;
     clearTimeout(switchTimer);
     switchTimer = setTimeout(() => pick(id), 700);
   }
 
   function pick(id, enter) {
+    if (!alive) return;
     clearTimeout(switchTimer);
     if (id === scope) {
       const first = enter && body.querySelector('.card, .chip');
@@ -221,9 +228,12 @@ export function NsfwView() {
 
   // Mesma ideia da tela inicial: só busca o catálogo quando a fileira chega perto, 2 por vez.
   function startLoad(p) {
+    if (!alive || p.state !== 'idle') return;
+    const generation = bodyToken;
     p.state = 'loading';
     active++;
-    p.load().then(() => {
+    p.load().catch(() => {}).then(() => {
+      if (!alive || generation !== bodyToken) return;
       p.state = 'done';
       active--;
       loadNearby();
@@ -231,9 +241,14 @@ export function NsfwView() {
   }
 
   function loadNearby() {
-    if (el.offsetParent === null) return;
-    const limit = window.innerHeight * 2.2;
-    for (let i = 0; i < pending.length && active < 2; i++) {
+    if (!alive || el.offsetParent === null) return;
+    if (resumeSearch) resumeSearch();
+    const light = store.settings().lowMemory !== false;
+    const concurrent = light ? 1 : 2;
+    const limit = window.innerHeight * (light ? 1.4 : 2.2);
+    // Um atalho solicitado pelo usuário tem prioridade sobre a pré-carga.
+    pending.forEach((p) => { if (active < concurrent && p.wantFocus && p.state === 'idle') startLoad(p); });
+    for (let i = 0; i < pending.length && active < concurrent; i++) {
       const p = pending[i];
       if (p.state !== 'idle') continue;
       if (!p.row.parentNode) {
@@ -250,12 +265,21 @@ export function NsfwView() {
     const first = p.row.querySelector('.card');
     if (first) return nav.focus(first);
     p.wantFocus = true;
-    if (p.state === 'idle') startLoad(p);
+    loadNearby();
+  }
+
+  function releaseBody() {
+    bodyToken++;
+    pending.forEach((p) => p.destroy && p.destroy());
+    pending = [];
+    active = 0;
+    resumeSearch = null;
+    personalSlot = null;
+    clear(body);
   }
 
   function renderBody() {
-    pending = [];
-    clear(body);
+    releaseBody();
     if (scope === 'search') return renderSearch();
     const all = sites();
     const site = all.filter((s) => s.id === scope)[0];
@@ -396,6 +420,8 @@ export function NsfwView() {
 
   // Busca só nos catálogos adultos (a aba Buscar do app não mostra nada daqui).
   function renderSearch() {
+    const generation = bodyToken;
+    const isCurrent = () => alive && generation === bodyToken;
     const input = h('input.input', { type: 'text', placeholder: t('Buscar...'), focusable: true });
     const go = h('div.btn.primary.search-go', { focusable: true, text: t('Buscar'), onSelect: () => run(input.value) });
     const results = h('div.rows');
@@ -404,36 +430,52 @@ export function NsfwView() {
     body.appendChild(results);
     let token = 0;
     function run(q) {
+      if (!isCurrent()) return;
+      const my = ++token;
+      resumeSearch = null;
       const query = (q || '').trim();
       clear(results);
       if (query.length < 2) return results.appendChild(h('div.hint', { text: t('Digite pelo menos 2 letras e aperte Buscar.') }));
-      const my = ++token;
       const cats = [];
       addons.adultAddons().forEach((a) => addons.adultCatalogs(a).forEach((e) => addons.supportsSearch(e.catalog) && cats.push(e)));
       let left = cats.length;
       let found = 0;
-      cats.forEach((entry) => {
+      let next = 0;
+      let searching = 0;
+      const light = store.settings().lowMemory !== false;
+      if (!left) results.appendChild(h('div.hint', { text: t('Nenhum addon com busca instalado.') }));
+      function fetchNext() {
+        if (!isCurrent() || my !== token || el.offsetParent === null) return;
+        while (next < cats.length && searching < (light ? 2 : 4)) fetchEntry(cats[next++]);
+      }
+      function fetchEntry(entry) {
+        searching++;
         const track = h('div.row-track', { 'data-scroll-x': '', 'data-group': '', 'data-trap': '' });
         const row = h('div.row', { 'data-anchor': '30' }, [h('div.row-title', null, [catName(entry), h('small', { text: siteName(entry.addon) })]), track]);
         addons
           .fetchCatalog(entry, { search: query })
           .then((metas) => {
-            if (my !== token || !metas.length) return;
+            if (!isCurrent() || my !== token || !metas.length) return;
             found++;
-            metas.slice(0, 30).forEach((m) => track.appendChild(itemCard(m, entry)));
+            metas.slice(0, light ? 12 : 30).forEach((m) => track.appendChild(itemCard(m, entry)));
             results.appendChild(row);
             loadVisibleImages(row);
           })
           .catch(() => {})
           .then(() => {
-            if (--left === 0 && my === token && !found) results.appendChild(h('div.hint', { text: t('Nada encontrado para "{q}".', { q: query }) }));
+            searching--;
+            if (--left === 0 && isCurrent() && my === token && !found) results.appendChild(h('div.hint', { text: t('Nada encontrado para "{q}".', { q: query }) }));
+            fetchNext();
           });
-      });
+      }
+      resumeSearch = fetchNext;
+      fetchNext();
     }
     nav.focus(input);
   }
 
   function render() {
+    if (!alive) return;
     lastKey = providersKey();
     // O site do filtro pode ter sido desmarcado em Ajustes.
     if (!scopes().some((f) => f.id === scope)) scope = store.get('nsfwScope', null);
@@ -456,7 +498,7 @@ export function NsfwView() {
   let lastKey = null;
   const providersKey = () => addons.tubeStatus() + '|' + addons.adultAddons().map((a) => a.manifest.id).join(',');
   const stopWatch = addons.onChange(() => {
-    if (!ready) return;
+    if (!alive || !ready || el.offsetParent === null) return;
     const key = providersKey();
     if (key === lastKey) return;
     const cur = nav.current();
@@ -493,7 +535,13 @@ export function NsfwView() {
     el: el,
     onKey: onKey,
     onShow: () => {
+      if (!alive) return;
       if (ready) {
+        if (providersKey() !== lastKey) {
+          render();
+          onRail();
+          return;
+        }
         if (scope !== 'search') {
           const all = sites();
           const site = all.filter((s) => s.id === scope)[0];
@@ -502,14 +550,27 @@ export function NsfwView() {
         }
         return loadNearby();
       }
+      if (loadingAddons) return;
+      loadingAddons = true;
       addons.load().then(() => {
+        if (!alive) return;
+        loadingAddons = false;
         ready = true;
+        if (el.offsetParent === null) return;
         render();
         onRail(); // a aba abre com o site atual em foco
+      }).catch(() => {
+        loadingAddons = false;
+        if (!alive) return;
+        clear(body);
+        body.appendChild(h('div.hint', { text: t('Não foi possível carregar os addons.') }));
       });
     },
+    onHide: () => clearTimeout(switchTimer),
     onScroll: () => loadNearby(),
     destroy: () => {
+      alive = false;
+      releaseBody();
       stopWatch();
       clearTimeout(switchTimer);
       if (bar.__destroy) bar.__destroy();
@@ -523,6 +584,7 @@ function catName(entry) {
 }
 
 function catalogRow(entry, parent) {
+  let alive = true;
   const row = h('div.row', { 'data-anchor': '30' });
   const sub = entry.extra && entry.extra.search ? t('busca no {site}', { site: siteName(entry.addon) }) : /creampie/i.test(entry.catalog.name || '') ? t('mais vistos') : siteName(entry.addon);
   const track = h('div.row-track.pending', { 'data-scroll-x': '', 'data-group': '', 'data-trap': '' }, skeletonCards());
@@ -531,16 +593,18 @@ function catalogRow(entry, parent) {
   parent.appendChild(row);
   const out = { row: row };
   const load = () =>
-    retrying(() => addons.fetchCatalog(entry, entry.extra))
+    retrying(() => alive ? addons.fetchCatalog(entry, entry.extra) : Promise.resolve([]))
       .then((metas) => {
+        if (!alive) return;
         clear(track);
         track.classList.remove('pending');
         if (!metas.length) {
           if (row.parentNode) row.parentNode.removeChild(row);
           return;
         }
-        metas.slice(0, ROW_LIMIT).forEach((m) => track.appendChild(itemCard(m, entry)));
-        if (metas.length > ROW_LIMIT)
+        const limit = store.settings().lowMemory !== false ? 12 : ROW_LIMIT;
+        metas.slice(0, limit).forEach((m) => track.appendChild(itemCard(m, entry)));
+        if (metas.length > limit)
           track.appendChild(
             h('div.card.see-all', { focusable: true, onSelect: () => router.push(GridView(entry, entry.extra || {})) }, [
               h('div.poster-wrap', null, h('div.see-all-label', null, [h('b', { text: t('Ver tudo') }), h('span', { text: catName(entry) })])),
@@ -549,8 +613,9 @@ function catalogRow(entry, parent) {
         loadVisibleImages(row);
         if (out.wantFocus && track.firstChild) nav.focus(track.firstChild);
       })
-      .catch(() => showRetry(track, () => load()));
+      .catch(() => alive && showRetry(track, () => load()));
   out.load = load;
+  out.destroy = () => { alive = false; clear(track); };
   return out;
 }
 
@@ -575,31 +640,40 @@ function GridView(entry, extra) {
   const slot = h('div');
   let mode = 'all';
   let pg = null;
+  let alive = true;
+  let generation = 0;
 
   // Busca uma página do catálogo; no filtro, junta páginas até ter o bastante (ou o catálogo acabar).
-  function fetcher() {
+  function fetcher(my) {
     let skip = 0;
     const keep = FILTER_KEEP[mode];
     return function load() {
       const got = [];
-      const step = (tries) =>
-        addons.fetchCatalog(entry, Object.assign({ skip: skip || undefined }, extra)).then((metas) => {
+      const step = (tries) => {
+        if (!alive || my !== generation) return Promise.resolve([]);
+        return addons.fetchCatalog(entry, Object.assign({ skip: skip || undefined }, extra)).then((metas) => {
+          if (!alive || my !== generation) return [];
           skip += metas.length;
           metas.forEach((m) => keep(m) && got.push(m));
           if (!metas.length || got.length >= 20 || tries >= 5) return got;
           return step(tries + 1);
         });
+      };
       return step(0);
     };
   }
 
   function build() {
-    const load = fetcher();
+    const my = ++generation;
+    if (pg && pg.destroy) pg.destroy();
+    const load = fetcher(my);
     pg = pagedGrid({
       load: load,
       key: (m) => m.id,
       card: (m) => itemCard(m, entry),
-      onEmpty: () => pg.el.insertBefore(h('div.hint', { text: t('Nada por aqui.') }), pg.el.firstChild),
+      onEmpty: () => {
+        if (alive && my === generation) pg.el.insertBefore(h('div.hint', { text: t('Nada por aqui.') }), pg.el.firstChild);
+      },
     });
     clear(slot);
     slot.appendChild(pg.el);
@@ -629,5 +703,12 @@ function GridView(entry, extra) {
   return {
     el: el,
     onShow: () => pg.start(),
+    destroy: () => {
+      alive = false;
+      generation++;
+      if (pg && pg.destroy) pg.destroy();
+      pg = null;
+      clear(slot);
+    },
   };
 }

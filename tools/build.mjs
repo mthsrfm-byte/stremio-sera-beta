@@ -1,7 +1,9 @@
 // Build: esbuild junta os módulos e o Babel reescreve para navegadores antigos (Chromium 38+),
 // para rodar também nas TVs Samsung mais velhas.
-import { build, context } from 'esbuild';
+import { build, context, transform } from 'esbuild';
+import { buildService } from './build-service.mjs';
 import { transformAsync } from '@babel/core';
+import { parse } from 'acorn';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,7 +55,7 @@ async function downlevel(code) {
     compact: false,
     presets: [['@babel/preset-env', { targets: { chrome: '38' }, modules: false, bugfixes: true }]],
   });
-  return out.code;
+  return (await transform(out.code, { minify: true, target: 'es5', charset: 'utf8', legalComments: 'none' })).code;
 }
 
 const esbuildOptions = {
@@ -130,6 +132,7 @@ async function emit(result) {
   // hls.js (já em ES5): o player baixa só quando abre um vídeo HLS (.m3u8), fora do app.js.
   fs.copyFileSync(path.join(root, 'node_modules', 'hls.js', 'dist', 'hls.min.js'), path.join(dist, 'hls.js'));
   const code = await downlevel(result.outputFiles[0].text);
+  parse(code, { ecmaVersion: 5, sourceType: 'script' });
   fs.writeFileSync(path.join(dist, 'app.js'), code);
   // Guarda simples: nada de sintaxe que o Chromium 38 não entende pode sobrar.
   for (const bad of ['=>', 'async function']) {
@@ -140,6 +143,8 @@ async function emit(result) {
   }
   console.log(`[build] dist/app.js ${(code.length / 1024).toFixed(0)} KB`);
 }
+
+if (!web) await buildService();
 
 if (watch) {
   const ctx = await context({

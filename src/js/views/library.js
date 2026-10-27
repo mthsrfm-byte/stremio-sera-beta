@@ -7,6 +7,7 @@ import { topbar, card, spinnerLine } from '../ui.js';
 import * as router from '../router.js';
 import { openDetails } from './details.js';
 import { t } from '../lib/i18n.js';
+import * as store from '../lib/store.js';
 
 const FILTERS = [
   { id: 'all', label: 'Tudo' },
@@ -27,6 +28,8 @@ export function LibraryView() {
   el.appendChild(scroller);
 
   let filter = 'all';
+  let alive = true;
+  let requestToken = 0;
 
   function renderFilters() {
     clear(filters);
@@ -48,6 +51,7 @@ export function LibraryView() {
   }
 
   function renderGrid() {
+    if (!alive) return;
     clear(grid);
     const items = stremio
       .cachedLibrary()
@@ -57,8 +61,26 @@ export function LibraryView() {
       grid.appendChild(h('div.hint', { text: stremio.isLoggedIn() ? t('Sua biblioteca está vazia.') : t('Entre na sua conta em Ajustes para ver a biblioteca.') }));
       return;
     }
-    items.forEach((it) => grid.appendChild(card({ name: it.name, poster: it.poster }, { onSelect: () => openDetails(it.type, it._id) })));
-    loadVisibleImages(el, 400);
+    let shown = 0;
+    const batchSize = store.settings().lowMemory !== false ? 48 : 96;
+    function appendBatch(enter) {
+      const start = shown;
+      const end = Math.min(items.length, start + batchSize);
+      for (; shown < end; shown++) {
+        const it = items[shown];
+        grid.appendChild(card({ name: it.name, poster: it.poster }, { onSelect: () => openDetails(it.type, it._id) }));
+      }
+      if (shown < items.length) {
+        const more = h('div.btn', { focusable: true, text: t('Carregar mais'), onSelect: () => {
+          grid.removeChild(more);
+          appendBatch(true);
+        } });
+        grid.appendChild(more);
+      }
+      if (enter && grid.children[start]) nav.focus(grid.children[start]);
+      loadVisibleImages(el, 300);
+    }
+    appendBatch(false);
   }
 
   renderFilters();
@@ -67,12 +89,17 @@ export function LibraryView() {
   return {
     el: el,
     onShow: () => {
+      const my = ++requestToken;
       renderGrid();
       stremio
         .getLibrary()
-        .then(() => renderGrid())
+        .then(() => { if (alive && my === requestToken) renderGrid(); })
         .catch(() => {});
     },
-    destroy: () => bar.__destroy && bar.__destroy(),
+    destroy: () => {
+      alive = false;
+      requestToken++;
+      if (bar.__destroy) bar.__destroy();
+    },
   };
 }

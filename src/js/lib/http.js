@@ -22,6 +22,8 @@ export function request(method, url, body, opts) {
     if (o.headers) for (const k in o.headers) xhr.setRequestHeader(k, o.headers[k]);
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
+        // Usado pelo cache sem serializar de novo objetos grandes na thread da TV.
+        if (o._onResponseSize) o._onResponseSize(xhr.responseText.length * 2);
         if (o.raw) return resolve(xhr.responseText);
         try {
           resolve(xhr.responseText ? JSON.parse(xhr.responseText) : null);
@@ -31,6 +33,10 @@ export function request(method, url, body, opts) {
       } else {
         const err = new Error(t('HTTP {code} em {url}', { code: xhr.status, url: url }));
         err.status = xhr.status;
+        try {
+          const detail = JSON.parse(xhr.responseText || '{}');
+          if (detail && typeof detail.error === 'string') err.detail = detail.error.slice(0, 240);
+        } catch (e) { /* resposta sem JSON: mantém o erro HTTP */ }
         reject(err);
       }
     };
@@ -69,18 +75,55 @@ export function getText(url, opts) {
   return request('GET', url, null, Object.assign({ raw: true }, opts));
 }
 
-// Cache em memória com validade, para catálogos e metadados.
+// Cache LRU com validade e orçamento: poucas respostas grandes também podem esgotar a TV.
+// O tamanho do JSON serve de orçamento de retenção, não de medida exata do heap.
 const cache = new Map();
+const CACHE_LIMIT = 24;
+const CACHE_BYTES = 2 * 1024 * 1024;
+let cacheBytes = 0;
+
+function removeCached(url) {
+  const item = cache.get(url);
+  if (!item) return;
+  cacheBytes -= item.bytes;
+  cache.delete(url);
+}
+
+function trimCache(now) {
+  cache.forEach((item, url) => { if (now >= item.expires) removeCached(url); });
+  while (cache.size > CACHE_LIMIT || cacheBytes > CACHE_BYTES) removeCached(cache.keys().next().value);
+}
+
+export function clearCache() {
+  cache.clear();
+  cacheBytes = 0;
+}
+
 export function cachedJSON(url, ttlMs, opts) {
-  const hit = cache.get(url);
   const now = Date.now();
-  if (hit && now - hit.t < (ttlMs || 600000)) return hit.p;
-  const p = getJSON(url, opts).catch((e) => {
+  trimCache(now);
+  const hit = cache.get(url);
+  if (hit) {
     cache.delete(url);
+    cache.set(url, hit);
+    return hit.p;
+  }
+  const entry = { expires: now + (ttlMs || 600000), bytes: 0, p: null };
+  let responseBytes = 0;
+  const p = getJSON(url, Object.assign({}, opts, { _onResponseSize: (bytes) => { responseBytes = bytes; } })).then((value) => {
+    if (cache.get(url) === entry) {
+      entry.bytes = responseBytes;
+      cacheBytes += responseBytes;
+      trimCache(Date.now());
+    }
+    return value;
+  }).catch((e) => {
+    // Uma requisição velha pode falhar depois de a URL já ter sido recarregada.
+    if (cache.get(url) === entry) removeCached(url);
     throw e;
   });
-  cache.set(url, { t: now, p: p });
-  // Pouca RAM na TV: guarda só as últimas 60 respostas.
-  if (cache.size > 60) cache.delete(cache.keys().next().value);
+  entry.p = p;
+  cache.set(url, entry);
+  trimCache(now);
   return p;
 }

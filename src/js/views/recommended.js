@@ -11,6 +11,7 @@ import * as router from '../router.js';
 import { openDetails } from './details.js';
 import * as reco from '../api/recommend.js';
 import { t } from '../lib/i18n.js';
+import * as store from '../lib/store.js';
 
 const ROW_LIMIT = 20;
 const PREVIEW_MS = 350; // parado no título: troca o destaque
@@ -73,6 +74,17 @@ function Billboard() {
   let frameWin = null; // janela do iframe do trailer (para reconhecer as mensagens dele)
   let revealed = false;
   let unmuteAt = 0;
+  let preloading = null;
+  let alive = true;
+  let artTimer = null;
+
+  function stopArt() {
+    if (preloading) {
+      preloading.onload = preloading.onerror = null;
+      preloading.src = '';
+      preloading = null;
+    }
+  }
 
   function stopTrailer() {
     clearTimeout(trailerTimer);
@@ -87,20 +99,23 @@ function Billboard() {
   }
 
   function show(it) {
+    if (!alive) return;
     current = it;
     token++;
     clearTimeout(previewTimer);
+    stopArt();
     stopTrailer();
     previewTimer = setTimeout(() => render(it, token), PREVIEW_MS);
   }
 
   function render(it, tk) {
-    if (tk !== token) return;
+    if (!alive || tk !== token) return;
     title.textContent = it.name;
     meta.textContent = metaLine(it);
     desc.textContent = it.overview || '';
     setArt(it.backdrop, tk);
-    trailerTimer = setTimeout(() => playTrailer(it, tk), TRAILER_MS);
+    // Um iframe do YouTube compete por RAM e decodificação com o motor torrent na TV.
+    if (store.settings().lowMemory === false) trailerTimer = setTimeout(() => playTrailer(it, tk), TRAILER_MS);
   }
 
   // A arte só entra pronta (pré-carregada): nunca aparece se formando de cima para baixo.
@@ -109,7 +124,9 @@ function Billboard() {
       front.classList.remove('show'); // sem arte: fica a aurora
       return;
     }
-    const pre = new Image();
+    if (store.settings().lowMemory !== false) url = url.replace(/(image\.tmdb\.org\/t\/p\/)\w+\//, '$1w780/');
+    stopArt();
+    const pre = preloading = new Image();
     pre.onload = () => {
       if (tk !== token) return;
       const back = front === bgA ? bgB : bgA;
@@ -118,9 +135,15 @@ function Billboard() {
       // Dois frames para o navegador pintar a imagem antes de animar.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
+          if (!alive || tk !== token) return;
+          clearTimeout(artTimer);
+          const previous = front;
           back.classList.add('show');
           front.classList.remove('show');
           front = back;
+          artTimer = setTimeout(() => {
+            if (alive && tk === token && previous !== front) previous.style.backgroundImage = '';
+          }, 750);
         })
       );
     };
@@ -214,10 +237,10 @@ function Billboard() {
 
   function playTrailer(it, tk) {
     reco.trailerKeys(it).then((keys) => {
-      if (tk !== token || document.hidden) return;
+      if (!alive || tk !== token || document.hidden || el.offsetParent === null) return;
       queue = keys.slice(0, MAX_TRAILERS);
       nextTrailer(tk);
-    });
+    }).catch(() => {});
   }
 
   // Próximo trailer da fila. Enquanto não aparece, nada muda na tela (a arte fica).
@@ -270,7 +293,12 @@ function Billboard() {
   function stop() {
     token++;
     clearTimeout(previewTimer);
+    clearTimeout(artTimer);
     stopTrailer();
+    stopArt();
+    bgA.style.backgroundImage = bgB.style.backgroundImage = '';
+    bgA.classList.remove('show');
+    bgB.classList.remove('show');
   }
 
   return {
@@ -279,7 +307,9 @@ function Billboard() {
     stop: stop,
     resume: () => current && show(current),
     destroy: () => {
+      alive = false;
       stop();
+      current = null;
       window.removeEventListener('message', onYouTubeMessage);
     },
   };
@@ -328,7 +358,43 @@ export function showRetry(track, load, onFocus) {
   );
 }
 
+// Só busca fileiras próximas da tela, uma por vez no modo leve. Sair/trocar de serviço
+// invalida os resultados e impede que respostas antigas recriem cartões fora de vista.
+function rowLoader(rows, built, onFirst) {
+  let alive = true;
+  let active = 0;
+  const tasks = built.map((b) => ({ row: b.row, load: b.load, destroy: b.destroy, state: 'idle' }));
+  function run() {
+    if (!alive || rows.offsetParent === null) return;
+    const light = store.settings().lowMemory !== false;
+    const limit = window.innerHeight * (light ? 1.4 : 2.2);
+    for (let i = 0; i < tasks.length && active < (light ? 1 : 2); i++) {
+      const task = tasks[i];
+      if (task.state !== 'idle') continue;
+      if (i > 0 && task.row.getBoundingClientRect().top > limit) break;
+      task.state = 'loading';
+      active++;
+      task.load().catch(() => {}).then(() => {
+        if (!alive) return;
+        active--;
+        task.state = 'done';
+        if (i === 0 && onFirst) onFirst();
+        run();
+      });
+    }
+  }
+  return {
+    run: run,
+    destroy: () => {
+      alive = false;
+      tasks.forEach((task) => task.destroy && task.destroy());
+      tasks.length = 0;
+    },
+  };
+}
+
 function buildRow(def, index, ctx) {
+  let alive = true;
   const row = h('div.row.reco-row', { 'data-anchor': '0' });
   // data-trap: no fim da fileira o foco para ali (antes pulava para outra fileira fora da tela).
   const track = h('div.row-track.pending', { 'data-scroll-x': '', 'data-group': '', 'data-trap': '' }, skeletonCards());
@@ -340,8 +406,7 @@ function buildRow(def, index, ctx) {
     const all = row.parentNode ? row.parentNode.children : [];
     for (let i = 0; i < all.length; i++) all[i].classList.toggle('past', i < index);
   };
-  const failed = () =>
-    showRetry(
+  const failed = () => alive && showRetry(
       track,
       () => load(),
       () => {
@@ -350,12 +415,13 @@ function buildRow(def, index, ctx) {
       }
     );
   const load = () =>
-    retrying(() => def.load(1))
+    retrying(() => alive ? def.load(1) : Promise.resolve([]))
       .then((items) => {
+        if (!alive) return;
         clear(track);
         track.classList.remove('pending');
         if (!items.length) return failed();
-        items.slice(0, ROW_LIMIT).forEach((it) =>
+        items.slice(0, store.settings().lowMemory !== false ? 12 : ROW_LIMIT).forEach((it) =>
           track.appendChild(
             card(it, {
               onSelect: () => openItem(it),
@@ -383,7 +449,7 @@ function buildRow(def, index, ctx) {
         loadVisibleImages(row);
       })
       .catch(failed);
-  return { row: row, load: load };
+  return { row: row, load: load, destroy: () => { alive = false; clear(track); } };
 }
 
 // Aba curada genérica. cfg: { tabId, crumb, defs }
@@ -400,6 +466,8 @@ function CuratedView(cfg) {
   const ctx = { billboard: billboard, rail: rail, crumb: cfg.crumb };
 
   let loaded = false;
+  let alive = true;
+  let loader = null;
   function load() {
     if (loaded) return;
     loaded = true;
@@ -411,12 +479,13 @@ function CuratedView(cfg) {
     const built = cfg.defs.map((def, i) => buildRow(def, i, ctx));
     built.forEach((b) => rows.appendChild(b.row));
     // Primeira fileira já com destaque no primeiro título.
-    built[0].load().then(() => {
+    loader = rowLoader(rows, built, () => {
+      if (!alive || el.offsetParent === null) return;
       // Primeiro item focável da primeira fileira (o cartão, ou o "Tentar de novo" se ela falhou).
       const first = rows.firstChild && rows.firstChild.querySelector('[data-focus]');
       if (first && nav.current() && nav.current().closest('.topbar')) nav.focus(first);
     });
-    built.slice(1).forEach((b) => b.load());
+    loader.run();
   }
 
   // Trailer só com a aba à vista e o app na frente.
@@ -427,11 +496,22 @@ function CuratedView(cfg) {
     el: el,
     onShow: () => {
       load();
+      if (loader) loader.run();
       const cur = nav.current();
       if (cur && cur.classList.contains('card') && !cur.classList.contains('see-all')) billboard.resume();
     },
     onHide: () => billboard.stop(),
+    onScroll: () => loader && loader.run(),
+    freeMemory: () => {
+      if (loader) loader.destroy();
+      loader = null;
+      clear(rows);
+      loaded = false;
+      billboard.stop();
+    },
     destroy: () => {
+      alive = false;
+      if (loader) loader.destroy();
       billboard.destroy();
       document.removeEventListener('visibilitychange', onVisibility);
       if (bar.__destroy) bar.__destroy();
@@ -480,19 +560,25 @@ export function StreamingsView() {
 
   let current = null;
   let switchTimer = null;
-  let firstItemOf = null;
+  let loader = null;
+  let alive = true;
+  let generation = 0;
 
   function scheduleSwitch(p) {
+    if (!alive) return;
     clearTimeout(switchTimer);
     switchTimer = setTimeout(() => switchTo(p), SWITCH_MS);
   }
 
   function switchTo(p, enterRows) {
+    if (!alive) return;
     clearTimeout(switchTimer);
     if (current === p) {
       if (enterRows) focusFirstCard();
       return;
     }
+    const my = ++generation;
+    if (loader) loader.destroy();
     current = p;
     logos.forEach((l, i) => l.classList.toggle('on', reco.STREAMINGS[i] === p));
     billboard.stop();
@@ -502,18 +588,21 @@ export function StreamingsView() {
     rows.classList.add('sw');
     clear(rows);
     rows.scrollTop = 0;
-    requestAnimationFrame(() => requestAnimationFrame(() => rows.classList.remove('sw')));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (alive && my === generation) rows.classList.remove('sw');
+    }));
     const ctx = { billboard: billboard, rail: rail, crumb: 'Streamings › ' + p.name };
     const built = p.rows.map((def, i) => buildRow(def, i, ctx));
     built.forEach((b) => rows.appendChild(b.row));
-    firstItemOf = p;
-    built[0].load().then(() => {
+    loader = rowLoader(rows, built, () => {
+      if (!alive || my !== generation || el.offsetParent === null) return;
       // Prévia no destaque: o primeiro título da home do serviço (sem tirar o foco dos logos).
       const first = rows.querySelector('.card');
-      if (current === p && first && first.__focus && !nav.current().closest('.reco-rows')) first.__focus(first);
+      const focused = nav.current();
+      if (first && first.__focus && focused && !focused.closest('.reco-rows')) first.__focus(first);
       if (enterRows && current === p) focusFirstCard();
     });
-    built.slice(1).forEach((b) => b.load());
+    loader.run();
   }
 
   function focusFirstCard() {
@@ -550,11 +639,28 @@ export function StreamingsView() {
         return;
       }
       if (!current) switchTo(reco.STREAMINGS[0]);
+      if (loader) loader.run();
       const cur = nav.current();
       if (cur && cur.classList.contains('card') && !cur.classList.contains('see-all')) billboard.resume();
     },
-    onHide: () => billboard.stop(),
+    onHide: () => {
+      clearTimeout(switchTimer);
+      billboard.stop();
+    },
+    onScroll: () => loader && loader.run(),
+    freeMemory: () => {
+      generation++;
+      clearTimeout(switchTimer);
+      if (loader) loader.destroy();
+      loader = null;
+      clear(rows);
+      current = null;
+      billboard.stop();
+    },
     destroy: () => {
+      alive = false;
+      generation++;
+      if (loader) loader.destroy();
       clearTimeout(switchTimer);
       billboard.destroy();
       document.removeEventListener('visibilitychange', onVisibility);
@@ -566,14 +672,16 @@ export function StreamingsView() {
 // ---------- Fileira simples (Início): título + frase, cartões e "Ver tudo" ----------
 export function simpleRow(def, crumb) {
   if (def.moods) return moodRow(def, crumb);
+  let alive = true;
   const row = h('div.row', { 'data-anchor': '30', cls: def.ranked ? 'ranked-row' : '' });
   row.appendChild(h('div.row-title', null, [t(def.title), h('small', { text: t(def.caption) })]));
   const track = h('div.row-track.pending', { 'data-scroll-x': '', 'data-group': '', 'data-trap': '' }, skeletonCards());
   row.appendChild(track);
-  const failed = () => showRetry(track, () => load());
+  const failed = () => alive && showRetry(track, () => load());
   const load = () =>
-    retrying(() => def.load(1))
+    retrying(() => alive ? def.load(1) : Promise.resolve([]))
       .then((items) => {
+        if (!alive) return;
         clear(track);
         track.classList.remove('pending');
         if (!items.length) {
@@ -581,7 +689,7 @@ export function simpleRow(def, crumb) {
           if (def.optional && row.parentNode) return row.parentNode.removeChild(row);
           return failed();
         }
-        items.slice(0, def.ranked ? 10 : ROW_LIMIT).forEach((it, i) => track.appendChild(card(it, { onSelect: () => openItem(it), rank: def.ranked ? i + 1 : 0 })));
+        items.slice(0, def.ranked ? 10 : store.settings().lowMemory !== false ? 12 : ROW_LIMIT).forEach((it, i) => track.appendChild(card(it, { onSelect: () => openItem(it), rank: def.ranked ? i + 1 : 0 })));
         if (!def.ranked)
           track.appendChild(
             h('div.card.see-all', { focusable: true, onSelect: () => openCategory(crumb, def) }, [
@@ -591,7 +699,7 @@ export function simpleRow(def, crumb) {
         loadVisibleImages(row);
       })
       .catch(failed);
-  return { row: row, load: load };
+  return { row: row, load: load, destroy: () => { alive = false; clear(track); } };
 }
 
 // Explore por clima: blocos coloridos que abrem a categoria inteira.
@@ -619,11 +727,12 @@ function openCategory(crumb, def) {
 }
 
 function CategoryView(crumb, def) {
+  let alive = true;
   const el = h('div.view');
   const scroller = h('div.scroll-y', { 'data-scroll-y': '' });
   const header = h('div.reco-crumb', null, [h('span', { text: t(crumb) }), ' › ', h('b', { text: t(def.title) })]);
   const pg = pagedGrid({
-    load: (page) => def.load(page),
+    load: (page) => def.load(page).then((items) => alive ? items : []),
     key: (it) => it.mediaType + ':' + it.tmdbId,
     card: (it) => card(it, { onSelect: () => openItem(it) }),
   });
@@ -633,5 +742,9 @@ function CategoryView(crumb, def) {
   return {
     el: el,
     onShow: () => pg.start(),
+    destroy: () => {
+      alive = false;
+      if (pg.destroy) pg.destroy();
+    },
   };
 }

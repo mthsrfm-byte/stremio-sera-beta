@@ -7,7 +7,7 @@ import * as store from '../lib/store.js';
 import { log } from '../lib/log.js';
 import { IS_WEB } from '../lib/platform.js';
 
-const SERVICE = 'http://127.0.0.1:8092/api/cal?u=';
+const SERVICE = 'http://127.0.0.1:8095/api/cal?u=';
 const REFRESH_MS = 5 * 60 * 1000;
 // Cor de cada agenda (na ordem dos links em Ajustes).
 const COLORS = ['#3347FF', '#F2A33A', '#3FB68B', '#E0559B'];

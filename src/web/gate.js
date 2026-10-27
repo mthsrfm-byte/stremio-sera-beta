@@ -3,7 +3,7 @@
 // Para deslogar todos os aparelhos: troque AUTH_VERSION (ex.: 'v2').
 (function () {
   var AUTH_VERSION = 'v1';
-  var KEY = 'sera.web.auth';
+  var KEY = 'sera.beta.web.auth';
   var gate = document.getElementById('gate');
   var form = document.getElementById('gateForm');
   var input = document.getElementById('gateInput');

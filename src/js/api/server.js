@@ -1,11 +1,80 @@
-// Servidor de streaming do Stremio (stremio-service) rodando num PC da rede, porta 11470.
-// Ele baixa torrents e entrega à TV por HTTP; também expõe /tracks para as faixas embutidas.
+// Dois caminhos separados: torrent experimental dentro da TV e servidor Stremio externo.
+// Só o servidor externo fornece proxy, ffprobe e conversão de codecs.
 import { getJSON, postJSON } from '../lib/http.js';
 import * as store from '../lib/store.js';
 import { getTvIp } from '../lib/tv.js';
 import { t } from '../lib/i18n.js';
+import { IS_WEB } from '../lib/platform.js';
 
 let status = { ok: false, checkedAt: 0, url: '' };
+const NATIVE_BASE = 'http://127.0.0.1:8094/api/torrent/';
+let nativeSequence = 0;
+
+export function nativeEnabled() {
+  return !IS_WEB && store.settings().nativeTorrent !== false;
+}
+
+// Uma URL HTTP que também inclui infoHash continua sendo uma fonte direta.
+export function isTorrent(stream) {
+  if (!stream) return false;
+  if (typeof stream.url === 'string') return /^magnet:/i.test(stream.url);
+  return typeof stream.infoHash === 'string';
+}
+
+export function isNativeMediaUrl(url) {
+  return /^http:\/\/127\.0\.0\.1:8094\/api\/torrent\/stream\//.test(String(url || ''));
+}
+
+export function createNativeSessionId() {
+  nativeSequence++;
+  return 'tv-' + Date.now().toString(36) + '-' + nativeSequence.toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+export function nativeStatus() {
+  return getJSON(NATIVE_BASE + 'status', { timeout: 4000, quiet: true });
+}
+
+// Nunca usa stop sem dono: uma resposta atrasada não pode encerrar a sessão nova.
+export function stopNative(sessionId) {
+  if (!sessionId) return Promise.resolve(null);
+  return postJSON(NATIVE_BASE + 'stop', { sessionId: sessionId }, { timeout: 4000, quiet: true }).catch(() => null);
+}
+
+function cancelled() {
+  const e = new Error(t('Preparação do torrent cancelada'));
+  e.cancelled = true;
+  return e;
+}
+
+function nativeTorrent(infoHash, fileIdx, sources, seriesInfo, options) {
+  const o = options || {};
+  const sessionId = o.sessionId || createNativeSessionId();
+  const current = () => !o.isCurrent || o.isCurrent();
+  if (!current()) return Promise.reject(cancelled());
+  const body = { infoHash: infoHash, sources: sources || [], sessionId: sessionId };
+  if (fileIdx !== null && fileIdx !== undefined && isFinite(fileIdx)) body.fileIdx = Number(fileIdx);
+  if (seriesInfo && isFinite(seriesInfo.season)) body.season = Number(seriesInfo.season);
+  if (seriesInfo && isFinite(seriesInfo.episode)) body.episode = Number(seriesInfo.episode);
+  return postJSON(NATIVE_BASE + 'start', body, { timeout: 70000, quiet: true })
+    .then((r) => {
+      if (!current()) throw cancelled();
+      if (r && typeof r.url === 'string' && r.url.indexOf('/api/torrent/stream/') === 0) r.url = 'http://127.0.0.1:8094' + r.url;
+      if (!r || !r.url || !r.sessionId || r.sessionId !== sessionId || !isNativeMediaUrl(r.url)) {
+        throw new Error(t('Resposta inválida do motor torrent local. Atualize a beta.'));
+      }
+      return { url: r.url, viaServer: false, viaNative: true, sessionId: sessionId };
+    })
+    .catch((e) => {
+      stopNative(sessionId);
+      if (!current() || e.cancelled) throw cancelled();
+      const detail = e.timeout
+        ? t('Tempo esgotado ao buscar peers e preparar o vídeo. Tente outra fonte.')
+        : e.status === 0 || e.status === 404
+          ? t('O serviço da TV não respondeu. Abra a beta pelo TizenBrew ou atualize o módulo.')
+          : e.detail || e.message;
+      throw new Error(t('Torrent local: {msg}', { msg: detail }));
+    });
+}
 
 export function baseUrl() {
   let u = (store.settings().serverUrl || '').trim();
@@ -71,13 +140,14 @@ export function scan(onProgress) {
 }
 
 function parseMagnet(uri) {
-  const m = uri.match(/xt=urn:btih:([a-zA-Z0-9]+)/);
+  const m = uri.match(/(?:[?&])xt=urn:btih:([a-zA-Z0-9]+)/i);
   if (!m) return null;
   let hash = m[1];
-  if (hash.length === 32) hash = base32ToHex(hash);
+  if (/^[a-z2-7]{32}$/i.test(hash)) hash = base32ToHex(hash);
+  if (!/^[a-f0-9]{40}$/i.test(hash)) return null;
   const trackers = [];
   uri.replace(/[?&]tr=([^&]+)/g, (_, tracker) => {
-    trackers.push('tracker:' + decodeURIComponent(tracker));
+    try { trackers.push('tracker:' + decodeURIComponent(tracker)); } catch (e) { /* tracker inválido não descarta o magnet */ }
     return '';
   });
   return { infoHash: hash.toLowerCase(), sources: trackers };
@@ -150,47 +220,44 @@ export function getJSONViaProxy(url, opts) {
   });
 }
 
-// Diz se o stream precisa do servidor no PC (torrent) ou toca direto (HTTP/debrid).
+// Só as fontes que realmente dependem do servidor externo ficam indisponíveis sem ele.
 export function needsServer(stream) {
-  if (typeof stream.url === 'string') {
-    if (stream.url.indexOf('magnet:') === 0) return true;
-    return !!(stream.behaviorHints && stream.behaviorHints.proxyHeaders);
-  }
-  return typeof stream.infoHash === 'string';
+  if (!stream) return false;
+  if (isTorrent(stream)) return !nativeEnabled();
+  return !!(typeof stream.url === 'string' && stream.behaviorHints && stream.behaviorHints.proxyHeaders);
 }
 
 export function isPlayableType(stream) {
-  return typeof stream.url === 'string' || typeof stream.infoHash === 'string';
+  return !!stream && (typeof stream.url === 'string' || typeof stream.infoHash === 'string');
 }
 
-// Converte um stream de addon numa URL que o <video> da TV consegue abrir.
-export function toPlayable(stream, seriesInfo) {
+// Converte a fonte numa URL e preserva a identidade da sessão local para encerrá-la depois.
+export function toPlayable(stream, seriesInfo, options) {
+  if (!stream) return Promise.reject(new Error(t('Tipo de link não suportado na TV')));
   const base = baseUrl();
-  if (typeof stream.url === 'string') {
-    if (stream.url.indexOf('magnet:') === 0) {
-      if (!base) return Promise.reject(new Error(t('Este link é torrent: configure o servidor do PC')));
-      const mg = parseMagnet(stream.url);
-      if (!mg) return Promise.reject(new Error(t('Magnet inválido')));
-      return createTorrent(base, mg.infoHash, null, mg.sources, seriesInfo).then((u) => ({ url: u, viaServer: true }));
-    }
-    const ph = stream.behaviorHints && stream.behaviorHints.proxyHeaders;
-    if (ph && base) {
-      return Promise.resolve({ url: proxyUrl(base, stream.url, ph.request, ph.response), viaServer: true });
-    }
-    return Promise.resolve({ url: stream.url, viaServer: false });
+  if (isTorrent(stream)) {
+    const mg = typeof stream.url === 'string' ? parseMagnet(stream.url) : { infoHash: stream.infoHash, sources: stream.sources || [] };
+    if (!mg || !/^[a-f0-9]{40}$/i.test(mg.infoHash || '')) return Promise.reject(new Error(t('Torrent ou magnet inválido')));
+    const hash = mg.infoHash.toLowerCase();
+    const index = typeof stream.url === 'string' ? null : stream.fileIdx;
+    if (nativeEnabled()) return nativeTorrent(hash, index, mg.sources, seriesInfo, options);
+    if (!base) return Promise.reject(new Error(t('Ative o torrent local na beta ou configure um servidor Stremio externo.')));
+    return createTorrent(base, hash, index, mg.sources, seriesInfo).then((url) => ({ url: url, viaServer: true, viaNative: false }));
   }
-  if (typeof stream.infoHash === 'string') {
-    if (!base) return Promise.reject(new Error(t('Este link é torrent: configure o servidor do PC')));
-    return createTorrent(base, stream.infoHash.toLowerCase(), stream.fileIdx, stream.sources || [], seriesInfo).then((u) => ({
-      url: u,
-      viaServer: true,
-    }));
+  if (typeof stream.url === 'string') {
+    const ph = stream.behaviorHints && stream.behaviorHints.proxyHeaders;
+    if (ph) {
+      if (!base) return Promise.reject(new Error(t('Esta fonte exige proxy: configure um servidor Stremio externo.')));
+      return Promise.resolve({ url: proxyUrl(base, stream.url, ph.request, ph.response), viaServer: true, viaNative: false });
+    }
+    return Promise.resolve({ url: stream.url, viaServer: false, viaNative: false });
   }
   return Promise.reject(new Error(t('Tipo de link não suportado na TV')));
 }
 
 // Faixas embutidas (áudio/legenda) do arquivo, lidas pelo servidor com ffprobe.
 export function tracks(mediaUrl) {
+  if (isNativeMediaUrl(mediaUrl)) return Promise.resolve(null);
   const base = baseUrl();
   if (!base) return Promise.resolve(null);
   return getJSON(base + 'tracks/' + encodeURIComponent(mediaUrl), { timeout: 20000, quiet: true }).then((list) => {
@@ -204,6 +271,7 @@ export function tracks(mediaUrl) {
 
 // Quanto do arquivo do torrent já está no PC (0–1). Links diretos (debrid/HTTP) não têm: null.
 export function streamProgress(mediaUrl) {
+  if (isNativeMediaUrl(mediaUrl)) return Promise.resolve(null);
   const m = String(mediaUrl || '').match(/\/([a-f0-9]{40})\/(\d+)/i);
   const base = baseUrl();
   if (!m || !base) return Promise.resolve(null);
@@ -214,6 +282,7 @@ export function streamProgress(mediaUrl) {
 
 // Hash OpenSubtitles do arquivo (64 KB do começo e do fim), calculado pelo servidor do PC.
 export function opensubHash(mediaUrl) {
+  if (isNativeMediaUrl(mediaUrl)) return Promise.resolve(null);
   const base = baseUrl();
   if (!base) return Promise.resolve(null);
   return getJSON(base + 'opensubHash?videoUrl=' + encodeURIComponent(mediaUrl), { timeout: 5000, quiet: true }).then(

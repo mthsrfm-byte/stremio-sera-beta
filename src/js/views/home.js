@@ -14,6 +14,7 @@ import { t } from '../lib/i18n.js';
 import * as reco from '../api/recommend.js';
 import { simpleRow, showRetry } from './recommended.js';
 import { genreName } from '../lib/genres.js';
+import * as store from '../lib/store.js';
 
 const ROTATE_MS = 8000;
 
@@ -33,6 +34,8 @@ export function HomeView() {
   el.appendChild(scroller);
 
   let loadedBoard = false;
+  let alive = true;
+  let boardToken = 0;
 
   function renderContinue() {
     clear(cwRow);
@@ -118,9 +121,11 @@ export function HomeView() {
   let active = 0;
 
   function loadNearby() {
-    if (el.offsetParent === null) return;
-    const limit = window.innerHeight * 2.2;
-    for (let i = 0; i < pending.length && active < 2; i++) {
+    if (!alive || el.offsetParent === null) return;
+    const light = store.settings().lowMemory !== false;
+    const limit = window.innerHeight * (light ? 1.4 : 2.2);
+    const generation = boardToken;
+    for (let i = 0; i < pending.length && active < (light ? 1 : 2); i++) {
       const p = pending[i];
       if (p.state !== 'idle') continue;
       if (!p.row.parentNode) {
@@ -130,7 +135,8 @@ export function HomeView() {
       if (p.row.getBoundingClientRect().top > limit) break;
       p.state = 'loading';
       active++;
-      p.load().then(() => {
+      p.load().catch(() => {}).then(() => {
+        if (!alive || generation !== boardToken) return;
         p.state = 'done';
         active--;
         loadNearby();
@@ -138,10 +144,18 @@ export function HomeView() {
     }
   }
 
+  function releaseRows() {
+    boardToken++;
+    pending.forEach((p) => p.destroy && p.destroy());
+    pending = [];
+    active = 0;
+    clear(rows);
+  }
+
   function renderBoard() {
     loadedBoard = true;
-    pending = [];
-    clear(rows);
+    releaseRows();
+    const generation = boardToken;
     if (reco.available()) {
       // Depois do Top 10, até duas fileiras "Porque você viu X" com o que a pessoa assistiu por último.
       const defs = reco.HOME_ROWS.slice();
@@ -159,6 +173,7 @@ export function HomeView() {
     addons
       .load()
       .then(() => {
+        if (!alive || generation !== boardToken) return;
         clear(rows);
         const cats = addons.boardCatalogs();
         if (!cats.length) rows.appendChild(h('div.row-empty', { text: t('Nenhum catálogo. Entre na sua conta em Ajustes.') }));
@@ -166,6 +181,7 @@ export function HomeView() {
         loadNearby();
       })
       .catch((e) => {
+        if (!alive || generation !== boardToken) return;
         clear(rows);
         rows.appendChild(h('div.row-empty', { text: t('Erro ao carregar addons: {msg}', { msg: e.message }) }));
       });
@@ -187,8 +203,8 @@ export function HomeView() {
     onScroll: () => loadNearby(),
     // Chamado quando um vídeo começa: solta as fileiras (o catálogo volta do cache ao retornar).
     freeMemory: () => {
-      pending = [];
-      clear(rows);
+      view.restoreFocus = null;
+      releaseRows();
       loadedBoard = false;
     },
     onKey: (e) => heroUi.onKey(e),
@@ -197,8 +213,10 @@ export function HomeView() {
       renderBoard();
     },
     destroy: () => {
+      alive = false;
+      releaseRows();
       offCalendar();
-      heroUi.pause();
+      heroUi.destroy();
       if (bar.__destroy) bar.__destroy();
     },
   };
@@ -222,16 +240,18 @@ function episodeLabel(videoId, metaId) {
 const ROW_LIMIT = 20;
 
 function buildRow(entry, parent) {
+  let alive = true;
   const row = h('div.row', { 'data-anchor': '30' });
   const title = h('div.row-title', null, [entry.catalog.name || entry.catalog.id, h('small', { text: typeLabel(entry.catalog.type) + ' · ' + (entry.addon.manifest.name || '') })]);
   const track = h('div.row-track.pending', { 'data-scroll-x': '', 'data-group': '', 'data-trap': '' }, skeletonCards());
   row.appendChild(title);
   row.appendChild(track);
   parent.appendChild(row);
-  const failed = () => showRetry(track, () => load());
+  const failed = () => alive && showRetry(track, () => load());
   const load = () =>
-    retrying(() => addons.fetchCatalog(entry))
+    retrying(() => alive ? addons.fetchCatalog(entry) : Promise.resolve([]))
       .then((metas) => {
+        if (!alive) return;
         clear(track);
         track.classList.remove('pending');
         if (!metas.length) {
@@ -239,7 +259,7 @@ function buildRow(entry, parent) {
           if (row.parentNode) parent.removeChild(row);
           return;
         }
-        metas.slice(0, ROW_LIMIT).forEach((m) => {
+        metas.slice(0, store.settings().lowMemory !== false ? 12 : ROW_LIMIT).forEach((m) => {
           track.appendChild(
             card(m, {
               onSelect: () => openDetails(m.type || entry.catalog.type, m.id),
@@ -249,7 +269,7 @@ function buildRow(entry, parent) {
         loadVisibleImages(row);
       })
       .catch(failed);
-  return { row: row, load: load };
+  return { row: row, load: load, destroy: () => { alive = false; clear(track); } };
 }
 
 function typeLabel(type) {
@@ -285,6 +305,10 @@ function buildHero() {
   let front = bgA;
   let paused = true;
   let bgToken = 0;
+  let loadToken = 0;
+  let alive = true;
+  let preloading = null;
+  let fadeTimer = null;
 
   function open(play) {
     const it = items[index];
@@ -292,6 +316,7 @@ function buildHero() {
   }
 
   function render() {
+    if (!alive || paused) return;
     const it = items[index];
     if (!it) {
       el.style.display = 'none';
@@ -299,7 +324,8 @@ function buildHero() {
     }
     el.style.display = '';
     const back = front === bgA ? bgB : bgA;
-    const pre = new Image();
+    if (preloading) { preloading.onload = preloading.onerror = null; preloading.src = ''; }
+    const pre = preloading = new Image();
     const token = ++bgToken;
     pre.onload = () => {
       if (token !== bgToken) return;
@@ -307,9 +333,15 @@ function buildHero() {
       // Dois frames para o fundo ser pintado antes do fade.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
+          if (!alive || paused || token !== bgToken) return;
+          clearTimeout(fadeTimer);
+          const previous = front;
           back.classList.add('show');
           front.classList.remove('show');
           front = back;
+          fadeTimer = setTimeout(() => {
+            if (alive && !paused && token === bgToken && previous !== front) previous.style.backgroundImage = '';
+          }, 750);
         })
       );
     };
@@ -332,12 +364,12 @@ function buildHero() {
     items.forEach((_, i) => dots.appendChild(h('span', { cls: i === index ? 'on' : '' })));
     // Pré-carrega o próximo fundo.
     const nx = items[(index + 1) % items.length];
-    if (nx) new Image().src = nx.background;
+    if (nx && store.settings().lowMemory === false) new Image().src = nx.background;
   }
 
   function schedule() {
     clearTimeout(timer);
-    if (paused || items.length < 2) return;
+    if (!alive || paused || items.length < 2 || store.settings().lowMemory !== false) return;
     timer = setTimeout(() => {
       index = (index + 1) % items.length;
       render();
@@ -354,33 +386,51 @@ function buildHero() {
 
   return {
     el: el,
-    load: () =>
-      hero
+    load: () => {
+      const generation = ++loadToken;
+      return hero
         .load()
         .then((list) => {
+          if (!alive || generation !== loadToken) return;
           items = list.slice(0, 12);
           index = 0;
           render();
           schedule();
         })
         .catch(() => {
+          if (!alive || generation !== loadToken) return;
           items = [];
           render();
-        }),
+        });
+    },
     // Fora de vista, o banner solta os fundos (2 imagens 1920x1080 ≈ 16 MB na memória).
     pause: () => {
       paused = true;
       clearTimeout(timer);
+      clearTimeout(fadeTimer);
       bgToken++;
+      if (preloading) { preloading.onload = preloading.onerror = null; preloading.src = ''; preloading = null; }
       bgA.style.backgroundImage = '';
       bgB.style.backgroundImage = '';
       bgA.classList.remove('show');
       bgB.classList.remove('show');
+      logo.removeAttribute('src');
     },
     resume: () => {
       paused = false;
       if (items.length) render();
       schedule();
+    },
+    destroy: () => {
+      alive = false;
+      loadToken++;
+      bgToken++;
+      clearTimeout(timer);
+      clearTimeout(fadeTimer);
+      if (preloading) { preloading.onload = preloading.onerror = null; preloading.src = ''; preloading = null; }
+      bgA.style.backgroundImage = bgB.style.backgroundImage = '';
+      logo.removeAttribute('src');
+      items = [];
     },
     // Esquerda no primeiro botão / direita no último: troca o destaque.
     onKey: (e) => {

@@ -60,12 +60,12 @@ function defaultAddons() {
 
 // Addons que o serviço do Seraflix na TV serve (XVideos e Pornhub pedidos pela própria TV).
 // Entram sozinhos quando o serviço responde; fora da TV (PC, testes) simplesmente não aparecem.
-// Porta própria dos addons (8092): versões antigas do serviço que o TizenBrew ainda tenha rodando
+// Porta própria dos addons (8095): versões antigas do serviço que o TizenBrew ainda tenha rodando
 // (ele só as desliga quando a TV reinicia) ficam nas portas velhas e não atrapalham.
 // SERVICE_MIN: versão do serviço que este app espera (o /api/version dele); mais velha, pede a nova.
 const TUBES = ['xv', 'ph'];
-const TUBE_PORT = 8092;
-const SERVICE_MIN = 11;
+const TUBE_PORT = 8095;
+const SERVICE_MIN = 12;
 let tubes = null; // null: ainda procurando; [] ou lista: já respondeu
 let tubeTries = 0;
 // 'searching' | 'ok' | 'old' (serviço antigo, sem os addons) | 'off' (serviço não responde)
@@ -124,7 +124,7 @@ function attachTubes() {
     // O serviço responde mas não tem os addons: é a versão antiga ainda rodando.
     const before = tubeState;
     const anyOld = version > 0 || list.some(Boolean);
-    getJSON('http://127.0.0.1:8090/api/ip', { timeout: 3000, quiet: true })
+    getJSON('http://127.0.0.1:8094/api/ip', { timeout: 3000, quiet: true })
       .then(
         () => (tubeState = 'old'),
         () => (tubeState = anyOld ? 'old' : 'off')
