@@ -144,3 +144,17 @@ test('formats learned on this TV leave failing profiles to manual choice and fav
   assert.equal(pick([c, d]).stream, d, 'a proven format wins a tie');
   api.__mock.learned = {};
 });
+test('cached debrid ([RD+]) wins over torrents; uncached debrid ([RD download]) only as a last resort', () => {
+  const rd = (id, tag, options) => {
+    const s = stream(id, options);
+    delete s.infoHash; delete s.fileIdx; delete s.seeders;
+    return Object.assign(s, { name: '[' + tag + '] Torrentio\n1080p', url: 'https://rd.example/' + id });
+  };
+  const cached = rd('a', 'RD+'), cached720 = rd('b', 'RD+', { resolution: '720p', gb: 1.5 });
+  const waiting = rd('c', 'RD download');
+  const torrent = stream('d', { seeds: 300 });
+  assert.equal(pick([waiting, torrent, cached]).stream, cached);
+  assert.equal(pick([waiting, torrent]).stream, torrent);
+  assert.equal(pick([waiting, cached720]).stream, cached720);
+  assert.equal(pick([waiting]).stream, waiting);
+});

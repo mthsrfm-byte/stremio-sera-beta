@@ -151,6 +151,9 @@ export function parseMetadata(input) {
     sizeMb,
     sizeScope,
     cached: /\[[A-Z]{2,3}\+\]|\binstant\b|⚡/i.test(name),
+    // Fonte de debrid ([RD+], [RD download], [AD]...). Sem o "+" ainda não está no debrid: abrir só
+    // manda baixar, e o vídeo não toca na hora.
+    debrid: /\[(?:RD|AD|PM|DL|DLX|TB|ED|OC)[+\] ]/.test(name),
     addon: name.split('\n')[0].replace(/\[[A-Z]{2,3}\+?\]/g, '').trim(),
     file: (filename || title.split('\n')[0]).replace(ICONS_RE, '').replace(FLAG_RE, '').replace(/\s{2,}/g, ' ').trim(),
     videoCodec: codec,
