@@ -71,7 +71,7 @@ test('real TCP peers: magnet metadata, byte ranges, cache eviction and backward 
     const result = await query(port, 'GET', url, null, { Range: 'bytes=' + from + '-' + to });
     assert.equal(result.status, 206);
     assert.deepEqual(result.data, bytes.slice(from, to + 1));
-    assert.ok(service.status().cacheBytes <= 64 * 1024);
+    assert.ok(service.status().cacheBytes <= 64 * 1024, JSON.stringify(service.status()));
     if (from === 0 && to === 100000) assert.equal(new Set(downloads).size, downloads.length, 'new pieces are not downloaded twice');
   }
   const invalid = await query(port, 'GET', url, null, { Range: 'bytes=999999-' });
@@ -92,38 +92,133 @@ test('peer parser bounds frames and isolates malformed messages', () => {
   assert.equal(malformed.destroyed, 1);
 });
 
-test('repeated aborted ranges discard partial pieces instead of accumulating buffers', { timeout: 5000 }, async t => {
+// Fake engine with per-piece partial data, selections and a manual "download" trigger.
+function fakeEngineFactory(state) {
   const EventEmitter = require('events');
-  let engine, partial = 0, discarded = 0;
-  const service = createService({ engineFactory: function () {
-    engine = new EventEmitter();
-    engine.files = [{ name: 'partial.mp4', offset: 0, length: 1024 * 1024, deselect() {} }];
-    engine.torrent = { pieceLength: 16384 };
-    engine.bitfield = { get() { return false; } };
+  return function () {
+    const engine = state.engine = new EventEmitter();
+    const pieceLength = state.pieceLength || 16384;
+    state.partial = new Map(); state.selected = []; state.discarded = []; state.have = new Set();
+    engine.files = [{ name: 'partial.mp4', offset: 0, length: state.fileLength || 1024 * 1024, deselect() {} }];
+    engine.torrent = { pieceLength };
+    engine.bitfield = { get: index => state.have.has(index) };
     engine.swarm = { wires: [], downloaded: 0, _peers: {}, downloadSpeed() { return 0; } };
-    engine.connect = engine.deselect = engine.destroy = function () {};
-    engine.partialBytes = () => partial;
-    engine.forgetPiece = (index, resetPartial) => { if (resetPartial) { discarded++; partial = 0; } };
-    engine.select = function () { partial += 8192; engine.emit('selected'); };
+    engine.connect = engine.destroy = function () {};
+    engine.store = { get(index, cb) { setImmediate(() => state.have.has(index) ? cb(null, Buffer.alloc(pieceLength, index % 256)) : cb(new Error('missing'))); } };
+    engine.partialBytes = () => Array.from(state.partial.values()).reduce((a, b) => a + b, 0);
+    engine.pieceProgress = index => state.have.has(index) ? pieceLength : state.partial.get(index) || 0;
+    engine.forgetPiece = (index, resetPartial) => { if (resetPartial) { state.discarded.push(index); state.partial.delete(index); } };
+    engine.select = function (from, to, priority, notify) {
+      state.selected.push({ index: from, priority, notify });
+      if (priority === 1 && !state.partial.has(from)) state.partial.set(from, 8192);
+      engine.emit('selected', from, priority);
+    };
+    engine.deselect = function (from, to, priority, notify) {
+      const i = state.selected.findIndex(x => x.index === from && x.priority === priority && x.notify === notify);
+      if (i >= 0) state.selected.splice(i, 1);
+    };
+    engine.complete = index => { state.partial.delete(index); state.have.add(index); engine.emit('download', index); };
     setImmediate(() => engine.emit('ready'));
     return engine;
-  } });
+  };
+}
+
+async function fakeService(t, state, options) {
+  const service = createService(Object.assign({ engineFactory: fakeEngineFactory(state) }, options));
   t.after(() => service.close());
   const server = http.createServer((req, res) => service.handle(req, res));
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
   const port = server.address().port;
-  const response = await query(port, 'POST', '/api/torrent/start', { sessionId: 'partial-test', infoHash: 'a'.repeat(40) });
-  const url = JSON.parse(response.data).url;
+  const response = await query(port, 'POST', '/api/torrent/start', { sessionId: 'fake-' + Math.random().toString(36).slice(2), infoHash: 'a'.repeat(40) });
+  return { service, port, url: JSON.parse(response.data).url };
+}
+
+async function waitFor(fn) {
+  for (let tries = 0; !fn() && tries < 200; tries++) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.ok(fn(), 'condition reached');
+}
+
+test('aborted ranges keep a bounded number of partial pieces for the next Range', { timeout: 5000 }, async t => {
+  const state = {};
+  const { service, port, url } = await fakeService(t, state);
   for (let n = 0; n < 6; n++) {
-    const selected = once(engine, 'selected');
+    const selected = once(state.engine, 'selected');
     const req = http.get({ hostname: '127.0.0.1', port, path: url, headers: { Range: 'bytes=' + (n * 16384) + '-' } });
     req.on('error', () => {});
     await selected;
     req.destroy();
-    // Wait until the server has received the close, without guessing a fixed delay.
-    for (let tries = 0; partial && tries < 100; tries++) await new Promise(resolve => setTimeout(resolve, 1));
-    assert.equal(service.status().partialBytes, 0);
+    await waitFor(() => !state.selected.some(x => x.priority === 1));
+    assert.ok(state.partial.size <= 2, 'at most two cancelled partial pieces are kept');
+    assert.ok(service.status().partialBytes <= 2 * 8192);
   }
-  assert.equal(discarded, 6);
+  assert.deepEqual(state.discarded, [0, 1, 2, 3]);
+  // Asking again for a kept piece reuses its partial data instead of downloading it from zero.
+  const selected = once(state.engine, 'selected');
+  const req = http.get({ hostname: '127.0.0.1', port, path: url, headers: { Range: 'bytes=' + (5 * 16384) + '-' } });
+  req.on('error', () => {});
+  await selected;
+  assert.equal(state.discarded.indexOf(5), -1);
+  req.destroy();
+});
+
+test('a piece that keeps receiving data is not failed by the deadline', { timeout: 5000 }, async t => {
+  const state = {};
+  const { port, url } = await fakeService(t, state, { pieceTimeout: 120 });
+  const growing = setInterval(() => state.partial.set(0, (state.partial.get(0) || 0) + 100), 20);
+  t.after(() => clearInterval(growing));
+  const result = query(port, 'GET', url, null, { Range: 'bytes=0-100' });
+  await new Promise(resolve => setTimeout(resolve, 400));
+  clearInterval(growing);
+  state.engine.complete(0);
+  const response = await result;
+  assert.equal(response.status, 206);
+  assert.equal(response.data.length, 101);
+});
+
+test('a piece without new data fails after the deadline and its partial is discarded', { timeout: 5000 }, async t => {
+  const state = {};
+  const { service, port, url } = await fakeService(t, state, { pieceTimeout: 120 });
+  await query(port, 'GET', url, null, { Range: 'bytes=0-100' }).catch(() => null);
+  await waitFor(() => state.discarded.indexOf(0) >= 0);
+  assert.ok(/sem dados/.test(service.status().error));
+});
+
+test('delivered pieces start a read-ahead that fits the cache, and a seek drops it', { timeout: 5000 }, async t => {
+  const state = {};
+  const { port, url } = await fakeService(t, state, { cacheBytes: () => 4 * 16384 });
+  state.have.add(0);
+  await query(port, 'GET', url, null, { Range: 'bytes=0-100' });
+  assert.deepEqual(state.selected.filter(x => x.priority === 0).map(x => x.index), [1, 2]);
+  state.engine.complete(1);
+  assert.deepEqual(state.selected.filter(x => x.priority === 0).map(x => x.index), [2]);
+  state.have.add(40);
+  await query(port, 'GET', url, null, { Range: 'bytes=' + (40 * 16384) + '-' + (40 * 16384 + 10) });
+  assert.deepEqual(state.selected.filter(x => x.priority === 0).map(x => x.index), [41, 42]);
+});
+
+test('cache size can follow free memory at each start', { timeout: 5000 }, async t => {
+  const state = {};
+  let budget = 12 * 1024 * 1024;
+  const { service } = await fakeService(t, state, { cacheBytes: () => budget });
+  assert.equal(service.status().cacheLimit, 12 * 1024 * 1024);
+  budget = NaN;
+  assert.equal(createService({ cacheBytes: () => budget }).status().cacheLimit, 8 * 1024 * 1024);
+});
+
+test('addon trackers are merged with the defaults, deduplicated and capped', () => {
+  const merged = createService.mergeTrackers(['tracker:udp://a.example:1/announce', 'dht:abc', 'tracker:udp://tracker.opentrackr.org:1337/announce', 'javascript:alert(1)']);
+  assert.equal(merged[0], 'udp://a.example:1/announce');
+  assert.equal(merged.filter(x => /opentrackr/.test(x)).length, 1);
+  assert.ok(createService.DEFAULT_TRACKERS.every(x => merged.indexOf(x) >= 0));
+  assert.ok(merged.every(x => /^(udp|https?):\/\//.test(x)));
+  const many = Array.from({ length: 40 }, (_, i) => 'udp://t' + i + '.example:1/announce');
+  assert.ok(createService.mergeTrackers(many).length <= 20);
+});
+
+test('content types match the container', () => {
+  assert.equal(createService.mime('a.mp4'), 'video/mp4');
+  assert.equal(createService.mime('a.avi'), 'video/x-msvideo');
+  assert.equal(createService.mime('a.MOV'), 'video/quicktime');
+  assert.equal(createService.mime('a.mkv'), 'video/x-matroska');
 });

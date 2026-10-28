@@ -53,10 +53,12 @@ const context = {
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../remote/tv-service.js'), 'utf8'), context, { timeout: 5000 });
 assert.strictEqual(handlers.length, 2, 'remote e addon server iniciam');
-function request(url, remote, origin) {
+function request(url, remote, origin, host, method) {
   let result;
   const res = { writeHead: function (code) { this.code = code; }, end: function (data) { result = { code: this.code, body: JSON.parse(String(data)) }; } };
-  handlers[0]({ url: url, method: 'GET', headers: origin ? { origin: origin } : {}, socket: { remoteAddress: remote || '127.0.0.1' } }, res);
+  const headers = { host: host || '127.0.0.1:8094' };
+  if (origin) headers.origin = origin;
+  handlers[0]({ url: url, method: method || 'GET', headers: headers, socket: { remoteAddress: remote || '127.0.0.1' } }, res);
   return result;
 }
 const status = request('/api/torrent/status');
@@ -66,6 +68,8 @@ assert.strictEqual(status.body.available, true);
 assert.strictEqual(status.body.active, false);
 assert.strictEqual(request('/api/torrent/status', '192.168.1.4').code, 403);
 assert.strictEqual(request('/api/torrent/status', '127.0.0.1', 'https://example.org').code, 403);
+assert.strictEqual(request('/api/torrent/status', '127.0.0.1', '', 'rebind.example:8094').code, 403, 'nome externo apontando para a TV');
+assert.strictEqual(request('/api/quit', '192.168.1.4', '', '', 'POST').code, 403, 'outro aparelho não derruba o serviço');
 assert.strictEqual(request('/api/version').body.version, 12);
 const memory = request('/api/memory');
 assert.strictEqual(memory.code, 200);
