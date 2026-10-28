@@ -30,10 +30,31 @@ intermediária para preservar nitidez; algumas substituem thumbnails antes menor
 A economia vem principalmente de liberar imagens/camadas ocultas e tarefas antigas,
 e não de reduzir indiscriminadamente a qualidade de toda imagem.
 
+Na revisão 1.4.0 entram:
+
+- **Player AVPlay** (nativo da Samsung) ao lado do **Proprietário** (o `<video>` de antes), em
+  Ajustes › Player. Com o AVPlay a TV lista as faixas de áudio e as legendas embutidas sem o PC,
+  e o buffer pode ser aumentado. Contornos da Samsung adaptados do StremioK (MIT): espera curta
+  entre fechar e reabrir, suspender/restaurar em segundo plano, desfazer o salto depois de pausa e
+  tolerar o erro passageiro depois de um avanço. Testado com um AVPlay simulado; **falta a TV real**.
+- **Início robusto:** uma fonte só conta como iniciada quando a posição anda 1 s tocando. Avisos de
+  debrid (*failed_access*, *limits_exceeded*, *downloading*…) são reconhecidos e explicados; um
+  filme/episódio com menos de 2 minutos não vai para a biblioteca nem segue a série. Avisos de conta
+  pulam os outros links da mesma conta.
+- **Formatos aprendidos** por player, guardados na TV: um formato vira "não funciona" depois de
+  falhar com dois arquivos diferentes, ao menos uma vez como único suspeito, e o Smart Choice o deixa
+  para a escolha manual. Ajustes › Player › Formatos aprendidos mostra e esquece.
+- **Motor torrent:** peça parcial preservada, prazo por falta de dados, leitura antecipada e cache
+  pela memória livre (veja [TORRENT-ENGINE.md](TORRENT-ENGINE.md)).
+- **Limites de resposta:** JSON até 4 MB, texto até 5 MB; até 1000 itens por catálogo, 500 fontes
+  e 300 legendas por addon.
+
 ## Teste que falta na Samsung
 
 1. Adicionar `mthsrfm-byte/stremio-sera-beta` no TizenBrew e entrar na conta.
 2. Manter **Modo leve** e **Torrent na própria TV (experimental)** ligados.
+   Em Ajustes › Player, testar o **AVPlay** e, se algo não abrir, comparar com o **Proprietário**.
+   Com o AVPlay, conferir as faixas de áudio e uma legenda embutida, pausa longa e voltar do Home.
 3. Começar com fonte 720p/1080p compatível, com peers disponíveis.
 4. Desligar o Mac e verificar início, pausa, avanço/retrocesso e reprodução prolongada.
 5. Em Ajustes, conferir **Estado do torrent local** e o diagnóstico de memória.

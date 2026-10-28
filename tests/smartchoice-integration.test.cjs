@@ -77,9 +77,10 @@ const FIRST = { infoHash: 'a'.repeat(40), fileIdx: 0 };
 const DUPLICATE = { ...FIRST, addon: 'Other addon' };
 const SECOND = { infoHash: 'b'.repeat(40), fileIdx: 0, resolution: '720p' };
 const THIRD = { infoHash: 'c'.repeat(40), fileIdx: 0 };
-function key(stream) { return stream.infoHash + ':' + stream.fileIdx; }
+function key(stream) { return stream.infoHash ? stream.infoHash + ':' + stream.fileIdx : stream.url; }
 function playerHarness(options) {
   const o = options || {}, elements = [], requests = [], stopped = [], failed = [], ranking = [], dialogs = [], opened = [];
+  const reports = [], remembered = [], probes = [], saved = [];
   let view, menuOptions, timerId = 0, sessionSequence = 0;
   const noop = () => {};
   function element(tag, props, children) {
@@ -103,16 +104,19 @@ function playerHarness(options) {
     substyle: { apply: noop }, subpick: { videoInfo: () => Promise.resolve({}), extra: () => ({}), rank: () => [] },
     store: { settings: () => ({ nativeTorrent: true, lowMemory: true, subtitleLangs: [], audioLangs: [] }), get: (key, fallback) => fallback, set: noop },
     log: { info: noop, warn: noop }, getJSON: () => Promise.resolve({}), getText: () => Promise.resolve(''), clearCache: noop,
-    si: { parse: s => ({ res: s.resolution || '1080p' }), summary: () => '', rememberStream: noop,
+    si: { parse: s => ({ res: s.resolution || '1080p' }), summary: () => '', rememberStream: (id, stream) => remembered.push(stream),
       choiceLabel: 'Smart Choice . Light', choiceContext: (meta, video) => ({ videoId: video.id, runtimeMinutes: 45 }),
       markFailed: stream => failed.push(stream), wasTried: (stream, tried) => tried.some(s => key(s) === key(stream)),
       lightFileError: () => '', smartPick: (list, ok, context) => { ranking.push({ list: list.slice(), context }); return list.length ? { stream: list[0] } : null; } },
     hlsplay: { isHls: () => false }, calendar: { startingWithin: () => [] },
+    avplayer: { playerName: () => 'html5' }, formats: { report: (stream, player, ok) => reports.push([stream, player, ok]), verdict: () => '' },
+    notice: { probe: (url) => { probes.push(url); return Promise.resolve(o.probe || null); }, NOTICE_MAX_SECONDS: 120,
+      accountWide: kind => kind === 'access', sameAccount: (a, b) => a.addon === b.addon && !!a.account && a.account === b.account, message: kind => 'notice:' + kind },
     server: { nativeEnabled: () => true, isTorrent: stream => !!stream.infoHash, isAvailable: () => false, needsServer: () => false,
       createNativeSessionId: () => 'session-' + (++sessionSequence), stopNative: id => { stopped.push(id); return Promise.resolve(); },
       toPlayable: (stream, series, options) => { const d = deferred(); requests.push({ stream, options, ...d }); return d.promise; } },
     addons: { isTubeStream: () => false, fetchSubtitles: () => Promise.resolve([]), fetchStreams: () => Promise.resolve(o.nextStreams || []) },
-    stremio: { saveProgress: noop }, skip: {}, hero: { logo: () => '', background: () => '' },
+    stremio: { saveProgress: (...args) => saved.push(args) }, skip: {}, hero: { logo: () => '', background: () => '' },
     menu: (title, items, options) => { menuOptions = options; }, toast: noop, fmtTime: () => '', timeHM: () => '',
     choiceDialog: (...args) => dialogs.push(args), eventTime: () => '', isFavorite: () => false, toggleFavorite: () => Promise.resolve(),
     router: { tabView: () => null, pop: noop }, sortedVideos: () => videos, openDetails: (...args) => opened.push(args), t: value => value,
@@ -121,13 +125,20 @@ function playerHarness(options) {
     document: { createTextNode: value => value, getElementById: () => element('app') },
   });
   vm.runInContext(source('player'), ctx);
-  const opts = { meta: { id: 'dev', type: o.isSeries ? 'series' : 'movie', name: 'Test' }, video: o.isSeries ? videos[0] : { id: 'dev' },
+  const opts = { meta: { id: o.metaId || 'dev', type: o.isSeries ? 'series' : 'movie', name: 'Test' }, video: o.isSeries ? videos[0] : { id: 'dev' },
     stream: o.automatic ? undefined : FIRST, pick: o.automatic ? Promise.resolve(FIRST) : undefined,
-    streams: [FIRST, DUPLICATE, SECOND, THIRD], isSeries: !!o.isSeries };
+    streams: o.streams || [FIRST, DUPLICATE, SECOND, THIRD], isSeries: !!o.isSeries };
+  if (o.stream) opts.stream = o.stream;
   view = ctx.PlayerView(opts);
   const video = elements.find(el => el.tag === 'video');
   const button = elements.find(el => el.props.html && el.props.html.includes('Fontes'));
-  return { view, video, requests, stopped, failed, ranking, dialogs, opened,
+  return { view, video, requests, stopped, failed, ranking, dialogs, opened, reports, remembered, probes, saved,
+    // A posição anda como na TV: um timeupdate a cada 250 ms tocando.
+    play(seconds, from) {
+      video.paused = false;
+      video.currentTime = from || 0;
+      for (let i = 0; i <= seconds * 4; i++) { video.listeners.timeupdate(); video.currentTime += 0.25; }
+    },
     switchManual(index) { button.props.onSelect(); menuOptions.onPick(index); } };
 }
 
@@ -186,4 +197,58 @@ test('next episode without Light candidates opens the manual list directly', asy
   assert.equal(h.opened[0][2].videoId, 'ep2');
   assert.equal(h.opened[0][2].manualStreams, true);
   h.view.destroy();
+});
+
+const HTTP_A = { url: 'https://debrid.example/a.mkv', addon: 'Torrentio', account: 'RD', name: '[RD+] A' };
+const HTTP_B = { url: 'https://debrid.example/b.mkv', addon: 'Torrentio', account: 'RD', name: '[RD+] B' };
+const HTTP_C = { url: 'https://other.example/c.mkv', addon: 'Other', name: 'C' };
+
+test('opening is not starting: the format is reported and the source remembered only after playing', async () => {
+  const h = playerHarness({ stream: HTTP_A, streams: [HTTP_A, HTTP_C], metaId: 'tt1' });
+  h.view.onShow(); await tick();
+  h.requests[0].resolve({ url: HTTP_A.url }); await tick();
+  h.video.duration = 5400;
+  h.video.listeners.playing();
+  h.video.listeners.timeupdate();
+  assert.equal(h.reports.length, 0, 'a playing event alone proves nothing');
+  assert.equal(h.remembered.length, 0);
+  h.play(0.5);
+  assert.equal(h.reports.length, 0, 'half a second is not enough');
+  h.play(3, 0.5);
+  assert.deepEqual(h.reports.map(r => [r[0], r[1], r[2]]), [[HTTP_A, 'html5', true]]);
+  assert.deepEqual(h.remembered, [HTTP_A]);
+  h.view.destroy();
+});
+
+test('a short notice clip from a debrid is not the movie: no progress, next source, same account skipped', async () => {
+  const h = playerHarness({ stream: HTTP_A, streams: [HTTP_A, HTTP_B, HTTP_C], probe: 'access' });
+  h.view.onShow(); await tick();
+  h.requests[0].resolve({ url: HTTP_A.url }); await tick();
+  h.video.duration = 30;
+  h.play(3);
+  await tick();
+  assert.deepEqual(h.probes, [HTTP_A.url]);
+  assert.equal(h.reports.length, 0, 'a notice says nothing about the format');
+  assert.equal(h.failed[0], HTTP_A);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].stream, HTTP_C, 'other links of the refused account are skipped');
+  h.video.listeners.ended();
+  assert.equal(h.saved.length, 0, 'a notice never goes to the library');
+  h.view.destroy();
+});
+
+test('a format error before starting teaches the format; a network error does not', async () => {
+  for (const [code, learns] of [[4, true], [2, false]]) {
+    const h = playerHarness({ stream: HTTP_A, streams: [HTTP_A, HTTP_C] });
+    h.view.onShow(); await tick();
+    h.requests[0].resolve({ url: HTTP_A.url }); await tick();
+    h.video.src = HTTP_A.url;
+    h.video.error = { code };
+    h.video.listeners.error();
+    await tick();
+    assert.deepEqual(h.reports.map(r => r[2]), learns ? [false] : [], 'code ' + code);
+    assert.equal(h.probes.length, 1, 'the link is checked for a debrid notice first');
+    assert.equal(h.requests.length, 2, 'next source');
+    h.view.destroy();
+  }
 });

@@ -1,6 +1,6 @@
 {
   "name": "stremio-sera-beta",
-  "version": "1.3.1-beta.1",
+  "version": "1.4.0-beta.1",
   "private": true,
   "description": "Seraflix Beta for Samsung Tizen TVs: low-memory mode and experimental on-TV torrents",
   "license": "GPL-3.0",

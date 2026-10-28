@@ -1,4 +1,5 @@
-// Player: <video> nativo da TV (decodificação por hardware), legendas próprias, faixas via Luna.
+// Player: AVPlay (player nativo da Samsung) ou o proprietário (<video>), escolhido em Ajustes.
+// Os dois têm a mesma interface (lib/avplayer.js imita o <video>); legendas próprias por cima.
 import { h, clear } from '../lib/dom.js';
 import * as nav from '../lib/nav.js';
 import { KEY } from '../lib/nav.js';
@@ -10,6 +11,9 @@ import { log } from '../lib/log.js';
 import { getText, getJSON, clearCache } from '../lib/http.js';
 import * as si from '../lib/streaminfo.js';
 import * as hlsplay from '../lib/hlsplay.js';
+import * as avplayer from '../lib/avplayer.js';
+import * as formats from '../lib/formats.js';
+import * as notice from '../lib/notice.js';
 import * as calendar from '../api/calendar.js';
 import * as server from '../api/server.js';
 import * as addons from '../api/addons.js';
@@ -23,7 +27,9 @@ import { t } from '../lib/i18n.js';
 import { IS_WEB } from '../lib/platform.js';
 
 const HIDE_MS = 5000;
-const SLOW_MS = 40000; // sem começar a tocar depois disso: oferece outro provedor
+const SLOW_MS = 45000; // sem começar a tocar depois disso: oferece outro provedor
+const STARTED_MS = 1000; // começou = a posição andou 1 s tocando (abrir não basta)
+const WORKING_MS = 2000; // tocou 2 s: o formato desta fonte funciona neste player
 const SLOW_COUNTDOWN = 5;
 const SAVE_MS = 15000;
 const LANG_NAMES = {
@@ -80,7 +86,9 @@ function PlayerView(opts) {
   let stream = opts.stream;
   const settings = store.settings();
 
-  const videoEl = h('video', { preload: 'auto' });
+  const playerKind = avplayer.playerName();
+  const useAv = playerKind === 'avplay';
+  const videoEl = useAv ? avplayer.create() : h('video', { preload: 'auto' });
   // No navegador, clicar no vídeo pausa e toca (como nos players da web).
   if (IS_WEB) videoEl.addEventListener('click', () => togglePlay());
   const subsEl = h('div.subs');
@@ -140,7 +148,7 @@ function PlayerView(opts) {
       h('div.pi-status-row', null, [h('div.pi-ring'), h('div.pi-texts', null, [introStatus, introCaption])]),
     ]),
   ]);
-  const el = h('div.view.player.intro-on', null, [videoEl, subsEl, overlay, skipBox, spinner, msgEl, intro]);
+  const el = h('div.view.player.intro-on' + (useAv ? '.av' : ''), null, [videoEl, subsEl, overlay, skipBox, spinner, msgEl, intro]);
 
   const renderer = subs.Renderer(subsEl);
   substyle.apply(subsEl, settings);
@@ -231,6 +239,9 @@ function PlayerView(opts) {
     viaServer = false;
     viaNative = false;
     hasPlayed = false;
+    playedMs = 0;
+    playedFrom = -1;
+    workedReported = false;
     gaveUp = false;
     recoveries = 0;
     stuckSince = 0;
@@ -305,7 +316,8 @@ function PlayerView(opts) {
     const token = ++sourceToken;
     sourceUrl = url;
     videoEl.autoplay = true;
-    if (!hlsplay.isHls(url)) {
+    // O AVPlay toca HLS sozinho; o hls.js é só para o <video>.
+    if (useAv || !hlsplay.isHls(url)) {
       videoEl.src = url;
       return;
     }
@@ -402,8 +414,24 @@ function PlayerView(opts) {
     });
   }
 
+  // Com o AVPlay a própria TV lista as faixas do arquivo (áudio e legendas), sem o servidor do PC.
+  function avEmbedded() {
+    if (videoEl.readyState < 1) return null;
+    const audio = videoEl.audioTracks.map((tr) => ({ lang: tr.language, label: tr.label, codec: tr.codec, channels: tr.channels }));
+    const textTracks = videoEl.avTextTracks().map((tr) => ({ lang: tr.lang, label: tr.label, codec: tr.codec, index: tr.index }));
+    return { audio: audio, subs: textTracks };
+  }
+  function canReadTracks() {
+    return useAv || (!viaNative && server.isAvailable());
+  }
+
   let tracksPromise = null;
   function loadEmbeddedTracks() {
+    if (useAv) {
+      const tracks = avEmbedded();
+      if (tracks) embedded = tracks;
+      return Promise.resolve(tracks);
+    }
     if (viaNative || !server.isAvailable()) return Promise.resolve(null);
     if (!tracksPromise) {
       const forUrl = mediaUrl;
@@ -592,10 +620,11 @@ function PlayerView(opts) {
 
   // Áudio preferido configurado: lê as faixas uma vez, 20s depois de o vídeo começar.
   function scheduleAudioPick() {
-    if (viaNative || !(settings.audioLangs || []).length || !server.isAvailable()) return;
+    if (!(settings.audioLangs || []).length || !canReadTracks()) return;
+    // O AVPlay já sabe as faixas ao começar; o servidor do PC precisa de tempo para ler o arquivo.
     setTimeout(() => {
       if (alive && hasPlayed) loadEmbeddedTracks().then(() => autoPick());
-    }, 20000);
+    }, useAv ? 3000 : 20000);
   }
 
   // ---------- Eventos do vídeo ----------
@@ -614,19 +643,69 @@ function PlayerView(opts) {
   });
   videoEl.addEventListener('playing', () => {
     hideIntro();
-    clearTimeout(slowTimer);
-    closeSlow();
-    if (!hasPlayed) {
-      scheduleAudioPick();
-      // Abriu: é esta a fonte que o Smart Choice tenta primeiro ao continuar depois.
-      if (meta.id !== 'dev') si.rememberStream(video.id, stream);
-    }
-    hasPlayed = true;
     showSpinner(false);
     message('');
     updatePlayBtn();
     scheduleHide();
   });
+
+  // Começou de verdade: a posição andou tocando. Um arquivo pode abrir e depois falhar ou não mostrar nada.
+  let playedMs = 0;
+  let playedFrom = -1;
+  let workedReported = false;
+  function trackStart() {
+    const pos = videoEl.currentTime;
+    if (!videoEl.paused && playedFrom >= 0 && pos > playedFrom && pos - playedFrom < 1.5) playedMs += (pos - playedFrom) * 1000;
+    playedFrom = pos;
+    if (!hasPlayed && playedMs >= STARTED_MS) confirmStart();
+    if (hasPlayed && !workedReported && playedMs >= WORKING_MS) {
+      workedReported = true;
+      if (isNoticeClip()) return noticeClip();
+      formats.report(stream, playerKind, true);
+      // Tocou: é esta a fonte que o Smart Choice tenta primeiro ao continuar depois.
+      if (meta.id !== 'dev') si.rememberStream(video.id, stream);
+    }
+  }
+  function confirmStart() {
+    hasPlayed = true;
+    clearTimeout(slowTimer);
+    closeSlow();
+    scheduleAudioPick();
+  }
+
+  // Filme ou episódio com menos de 2 minutos é o aviso de um debrid, não o vídeo.
+  function isNoticeClip() {
+    const d = videoEl.duration;
+    return (meta.type === 'movie' || meta.type === 'series') && !addons.isTubeStream(stream) && !server.isTorrent(stream) &&
+      d > 0 && isFinite(d) && d < notice.NOTICE_MAX_SECONDS;
+  }
+  function noticeClip() {
+    const failed = stream;
+    notice.probe(mediaUrl, 5000).then((kind) => {
+      if (!alive || failed !== stream) return;
+      sourceNotice(kind || 'short', failed);
+    });
+  }
+
+  // O link levou a um aviso do debrid: diz o que houve e tenta a próxima fonte (sem os links da
+  // mesma conta, quando o aviso é sobre a conta).
+  const blockedAccounts = [];
+  function sourceNotice(kind, failed) {
+    const text = notice.message(kind, failed);
+    log.warn('Aviso do debrid', kind, failed && failed.name);
+    if (notice.accountWide(kind)) blockedAccounts.push(failed);
+    si.markFailed(failed, lightContext());
+    const next = autoFallback();
+    try { videoEl.pause(); } catch (e) { /* ignore */ }
+    if (next) {
+      failedNotes.push(text);
+      toast(text, 6000);
+      autoSelecting = true;
+      switchTo(next);
+      return;
+    }
+    fail(text, false, failedNotes.join('\n'));
+  }
   videoEl.addEventListener('pause', () => {
     updatePlayBtn();
     if (!syncUi) showControls();
@@ -635,6 +714,7 @@ function PlayerView(opts) {
   videoEl.addEventListener('waiting', () => showSpinner(true));
   videoEl.addEventListener('canplay', () => showSpinner(false));
   videoEl.addEventListener('timeupdate', () => {
+    trackStart();
     if (restartBtn.style.display !== 'none' && videoEl.currentTime * 1000 > (opts.startTime || 0) + 300000) restartBtn.style.display = 'none';
     const now = Date.now();
     if (!videoEl.paused && lastTick) {
@@ -646,6 +726,13 @@ function PlayerView(opts) {
     if (controlsOn) updateTimes();
   });
   videoEl.addEventListener('ended', () => {
+    if (isNoticeClip()) {
+      if (!workedReported) {
+        workedReported = true;
+        noticeClip();
+      }
+      return;
+    }
     saveProgress();
     if (opts.isSeries && nextVideo()) playNext();
     else router.pop();
@@ -654,7 +741,7 @@ function PlayerView(opts) {
     const err = videoEl.error;
     // Sem src (fonte sendo trocada ou o hls.js soltando o <video>) não é erro do vídeo.
     if (!sourceUrl || !videoEl.getAttribute('src')) return;
-    playbackError(err && err.code);
+    playbackError(err && err.code, useAv && err && err.message ? 'AVPlay: ' + err.message : '');
   });
 
   // Erro do <video> (código 1–4) ou do hls.js (why: o que ele disse). Um aviso por fonte.
@@ -665,8 +752,14 @@ function PlayerView(opts) {
     errorToken = sourceToken;
     const failed = stream;
     const generation = startGeneration;
-    errorDetails(code, why).then((details) => {
+    const started = hasPlayed;
+    const probe = !started && !server.isTorrent(failed) ? notice.probe(mediaUrl, 5000) : Promise.resolve(null);
+    Promise.all([errorDetails(code, why), probe]).then((r) => {
+      let details = r[0];
       if (!alive || generation !== startGeneration || failed !== stream) return;
+      if (r[1]) return sourceNotice(r[1], failed);
+      // Só falha de formato/decodificação, antes de tocar, ensina sobre o formato (rede não).
+      if (!started && (code === 3 || code === 4)) formats.report(failed, playerKind, false);
       si.markFailed(failed, lightContext());
       const next = autoFallback();
       if (next) {
@@ -690,7 +783,8 @@ function PlayerView(opts) {
   let autoTries = 0;
   function autoFallback() {
     if (autoTries >= 2) return null;
-    const rest = (opts.streams || []).filter((candidate) => !si.wasTried(candidate, tried));
+    const rest = (opts.streams || []).filter((candidate) => !si.wasTried(candidate, tried) &&
+      !blockedAccounts.some((b) => notice.sameAccount(b, candidate)));
     let next = null;
     if (addons.isTubeStream(stream)) {
       // As opções do mesmo vídeo de site são variantes diretas do próprio addon.
@@ -985,7 +1079,9 @@ function PlayerView(opts) {
   }
 
   // ---------- Controles ----------
+  let userPaused = false;
   function togglePlay() {
+    userPaused = !videoEl.paused;
     if (videoEl.paused) videoEl.play();
     else videoEl.pause();
     showControls();
@@ -1227,6 +1323,7 @@ function PlayerView(opts) {
   // Com o torrent ainda baixando, não extrai: o ffmpeg leria o arquivo e roubaria a prioridade do download.
   function selectEmbeddedSub(index) {
     renderer.clear();
+    if (useAv) return avEmbeddedSub(index);
     server.streamProgress(mediaUrl).then((p) => {
       if (!alive) return;
       if (p !== null && p >= 0.999) extractedSub(index);
@@ -1266,6 +1363,33 @@ function PlayerView(opts) {
       .then(() => (cs.busy = false));
   }
 
+  // AVPlay: a TV entrega cada fala da faixa embutida na hora dela; o app desenha no seu estilo.
+  // A TV às vezes ignora a primeira escolha da faixa: escolhe de novo depois de alguns segundos.
+  function avEmbeddedSub(i) {
+    const tr = embedded && embedded.subs[i];
+    if (!tr) return;
+    const cs = { kind: 'embedded', index: i, av: true, cues: [] };
+    currentSub = cs;
+    applySavedOffset();
+    const onText = (text, durMs) => {
+      if (!alive || currentSub !== cs) return;
+      const now = videoEl.currentTime;
+      const clean = escapeHtml(String(text).replace(/\{\\[^}]*\}/g, '').replace(/<[^>]*>/g, '').replace(/\\N/g, '\n')).trim();
+      cs.cues = cs.cues.filter((c) => c.end > now - 1);
+      if (clean) cs.cues.push({ start: now, end: now + Math.max(0.5, (durMs || 2000) / 1000), text: clean });
+      if (cs.cues.length > 8) cs.cues = cs.cues.slice(-8);
+      renderer.set(cs.cues);
+      renderer.update(videoEl.currentTime);
+    };
+    if (!videoEl.avSelectText(tr.index, onText)) return toast(t('A TV não conseguiu ligar essa legenda embutida.'));
+    setTimeout(() => {
+      if (alive && currentSub === cs) videoEl.avSelectText(tr.index, onText);
+    }, 4000);
+  }
+  function stopAvText() {
+    if (useAv && currentSub.kind === 'embedded') videoEl.avSelectText(null);
+  }
+
   // Sem o arquivo inteiro no PC não dá para extrair a faixa; o player HTML5 da TV não mostra
   // legenda embutida sozinho (falta o player nativo da Samsung, AVPlay).
   function nativeEmbeddedSub() {
@@ -1285,6 +1409,10 @@ function PlayerView(opts) {
 
   // Menus de faixas: lê as faixas embutidas só agora, quando o usuário pede.
   function withTracks(open) {
+    if (useAv) {
+      loadEmbeddedTracks();
+      return open();
+    }
     if (embedded || viaNative || !server.isAvailable()) return open();
     toast(t('Lendo as faixas do arquivo...'), 2500);
     loadEmbeddedTracks().then(() => alive && open());
@@ -1299,7 +1427,13 @@ function PlayerView(opts) {
     let list = [];
     if (native && native.length) {
       for (let i = 0; i < native.length; i++) {
-        list.push({ label: langName(native[i].language) + (native[i].label ? ' · ' + native[i].label : ''), value: i, checked: native[i].enabled });
+        const tr = native[i];
+        list.push({
+          label: langName(tr.language) + (tr.label ? ' · ' + tr.label : ''),
+          sub: [tr.codec, tr.channels ? t('{n} canais', { n: tr.channels }) : ''].filter(Boolean).join(' · '),
+          value: i,
+          checked: tr.enabled,
+        });
       }
     } else if (embedded && embedded.audio.length) {
       list = embedded.audio.map((tr, i) => ({
@@ -1310,7 +1444,7 @@ function PlayerView(opts) {
       }));
     }
     menu(t('Áudio'), list, {
-      empty: viaNative ? t('A TV não expõe outras faixas nesta fonte. Tente uma fonte no idioma desejado.') : server.isAvailable() ? t('Só uma faixa de áudio.') : t('Para listar as faixas, conecte o servidor externo em Ajustes.'),
+      empty: useAv ? t('Só uma faixa de áudio.') : viaNative ? t('A TV não expõe outras faixas nesta fonte. Tente uma fonte no idioma desejado.') : server.isAvailable() ? t('Só uma faixa de áudio.') : t('Para listar as faixas, conecte o servidor externo em Ajustes.'),
       onPick: (i) => selectEmbeddedAudio(i),
     });
   }
@@ -1353,6 +1487,7 @@ function PlayerView(opts) {
       empty: addonSubs === null ? t('Carregando legendas...') : t('Nenhuma legenda.'),
       onPick: (v) => {
         if (v.kind === 'off' || v.kind === 'embedded' || v.kind === 'addon') autoDone.sub = true;
+        if (v.kind === 'off' || v.kind === 'addon') stopAvText();
         if (v.kind === 'off') {
           renderer.clear();
           currentSub = { kind: 'off' };
@@ -1572,7 +1707,10 @@ function PlayerView(opts) {
     clearTimeout(slowTimer);
     closeSlow();
     slowTimer = setTimeout(() => {
-      if (alive && !hasPlayed) checkSlow();
+      if (!alive || hasPlayed) return;
+      // Pausado por quem assiste: não é demora da fonte.
+      if (userPaused) return armSlow(delay);
+      checkSlow();
     }, typeof delay === 'number' ? delay : SLOW_MS);
   }
 
@@ -1731,6 +1869,8 @@ function PlayerView(opts) {
   function saveProgress() {
     const d = videoEl.duration;
     if (!(d > 0) || !isFinite(d) || !videoEl.currentTime) return;
+    // Aviso de debrid (menos de 2 minutos) não vai para a biblioteca nem para o Continuar.
+    if (isNoticeClip()) return;
     const delta = watchedDelta;
     watchedDelta = 0;
     if (meta.id === 'dev') return; // teste de desenvolvimento: não mexe na biblioteca
@@ -1743,6 +1883,7 @@ function PlayerView(opts) {
     const cur = nav.current();
     switch (k) {
       case KEY.PLAY:
+        userPaused = false;
         videoEl.play();
         showControls();
         return true;
@@ -1754,6 +1895,7 @@ function PlayerView(opts) {
         videoEl.muted = !videoEl.muted;
         return true;
       case KEY.PAUSE:
+        userPaused = true;
         videoEl.pause();
         return true;
       case KEY.PLAYPAUSE:
@@ -1825,6 +1967,11 @@ function PlayerView(opts) {
     el: el,
     onKey: onKey,
     onShow: () => {
+      // O vídeo do AVPlay fica num plano atrás da página: o fundo precisa ficar transparente.
+      if (useAv) {
+        document.documentElement.classList.add('av-playing');
+        document.body.classList.add('av-playing');
+      }
       if (!ticker) {
         setupIntro();
         start();
@@ -1873,8 +2020,13 @@ function PlayerView(opts) {
         dropSource();
         videoEl.removeAttribute('src');
         videoEl.load();
+        if (videoEl.avDestroy) videoEl.avDestroy();
       } catch (e) {
         /* ignore */
+      }
+      if (useAv) {
+        document.documentElement.classList.remove('av-playing');
+        document.body.classList.remove('av-playing');
       }
     },
   };

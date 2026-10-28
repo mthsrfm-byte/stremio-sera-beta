@@ -24,6 +24,17 @@ O layout, os fades de banners e pôsteres e o destaque do foco continuam. Imagen
 
 As fontes ainda precisam ser compatíveis com o player da Samsung. Uma TV Samsung não ganha suporte a Dolby Vision, novos codecs ou mais memória por usar esta beta. Quando uma fonte não abrir, tente outra versão do arquivo e outra faixa de áudio quando disponível.
 
+## Player: AVPlay ou Proprietário
+
+Em **Ajustes › Player** dá para escolher entre o **AVPlay**, o player nativo da Samsung (padrão
+quando a TV o oferece), e o **Proprietário**, o player HTML5 das versões anteriores. Com o AVPlay
+a TV lista as faixas de áudio e as legendas embutidas do arquivo sem o PC, e o buffer pode ser
+aumentado (útil no torrent). Se uma fonte não abrir num player, vale testar no outro: cada um
+aprende separadamente quais formatos funcionam nesta TV (**Formatos aprendidos**).
+
+Avisos de debrid (acesso recusado, limite da conta, arquivo ainda baixando) são reconhecidos e
+explicados, e a próxima fonte é tentada sozinha.
+
 ## Smart Choice . Light
 
 A seleção automática compara saúde informada dos seeds, carga por duração e compatibilidade.

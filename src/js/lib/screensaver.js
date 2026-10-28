@@ -117,6 +117,9 @@ function busy() {
   if (document.hidden) return true;
   // Na TV leve, não cria outro conjunto de fundos durante o player ou a preparação do torrent.
   if (light() && document.querySelector('.player:not(.hidden)')) return true;
+  // AVPlay (lib/avplayer.js): o vídeo é um plano da TV, o elemento só imita o <video>.
+  const planes = document.querySelectorAll('.av-host');
+  for (let i = 0; i < planes.length; i++) if (!planes[i].paused && !planes[i].ended) return true;
   const vids = document.getElementsByTagName('video');
   for (let i = 0; i < vids.length; i++) {
     const v = vids[i];
