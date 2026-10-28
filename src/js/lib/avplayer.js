@@ -23,6 +23,22 @@ export function playerName() {
   return choice !== 'html5' && available() ? 'avplay' : 'html5';
 }
 
+// O AVPlay é o padrão: se nesta TV ele falha várias vezes antes de tocar e nunca tocou nada,
+// o player avisa uma vez que dá para usar o Proprietário. Devolve true quando é hora de avisar.
+const HEALTH_KEY = 'avplayHealth';
+export function noteResult(ok) {
+  const h = store.getDevice(HEALTH_KEY, null) || { worked: false, fails: 0, warned: false };
+  if (ok) {
+    if (h.worked && !h.fails) return false;
+    h.worked = true;
+    h.fails = 0;
+  } else if (!h.worked) h.fails++;
+  const warn = !h.worked && h.fails >= 3 && !h.warned;
+  if (warn) h.warned = true;
+  store.setDevice(HEALTH_KEY, h);
+  return warn;
+}
+
 // Algumas instalações só expõem webapis depois de carregar o script da própria TV.
 export function ensureWebapis() {
   if (typeof window === 'undefined' || window.webapis || !window.tizen) return;

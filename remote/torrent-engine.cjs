@@ -54,8 +54,9 @@ function mime(name) {
 }
 function mergeTrackers(sources) {
   var list = (Array.isArray(sources) ? sources.slice(0, 16) : []).map(function (x) { return String(x).replace(/^tracker:/, ''); })
-    .filter(function (x) { return /^(udp|https?):\/\//.test(x) && x.length < 512; }).concat(DEFAULT_TRACKERS);
-  return list.filter(function (x, i) { return list.indexOf(x) === i; }).slice(0, MAX_TRACKERS);
+    .filter(function (x, i, all) { return /^(udp|https?):\/\//.test(x) && x.length < 512 && all.indexOf(x) === i && DEFAULT_TRACKERS.indexOf(x) < 0; });
+  // The defaults always stay: only the addon's list is cut to fit the cap.
+  return list.slice(0, MAX_TRACKERS - DEFAULT_TRACKERS.length).concat(DEFAULT_TRACKERS);
 }
 function chooseFile(files, request) {
   if (request.fileIdx !== undefined && request.fileIdx !== null) {

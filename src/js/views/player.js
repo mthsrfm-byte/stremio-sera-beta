@@ -242,6 +242,8 @@ function PlayerView(opts) {
     playedMs = 0;
     playedFrom = -1;
     workedReported = false;
+    shortIsReal = false;
+    userPaused = false;
     gaveUp = false;
     recoveries = 0;
     stuckSince = 0;
@@ -315,6 +317,7 @@ function PlayerView(opts) {
     dropSource();
     const token = ++sourceToken;
     sourceUrl = url;
+    metaLoaded = false;
     videoEl.autoplay = true;
     // O AVPlay toca HLS sozinho; o hls.js é só para o <video>.
     if (useAv || !hlsplay.isHls(url)) {
@@ -629,6 +632,7 @@ function PlayerView(opts) {
 
   // ---------- Eventos do vídeo ----------
   videoEl.addEventListener('loadedmetadata', () => {
+    metaLoaded = true;
     if (pendingStart > 0) {
       try {
         videoEl.currentTime = pendingStart / 1000;
@@ -653,6 +657,8 @@ function PlayerView(opts) {
   let playedMs = 0;
   let playedFrom = -1;
   let workedReported = false;
+  let shortIsReal = false; // curto, mas sem sinal de aviso: é o vídeo de verdade (ex.: episódio de 2 min)
+  let metaLoaded = false; // o arquivo chegou e foi lido: um erro depois disso não é de rede
   function trackStart() {
     const pos = videoEl.currentTime;
     if (!videoEl.paused && playedFrom >= 0 && pos > playedFrom && pos - playedFrom < 1.5) playedMs += (pos - playedFrom) * 1000;
@@ -660,11 +666,16 @@ function PlayerView(opts) {
     if (!hasPlayed && playedMs >= STARTED_MS) confirmStart();
     if (hasPlayed && !workedReported && playedMs >= WORKING_MS) {
       workedReported = true;
-      if (isNoticeClip()) return noticeClip();
-      formats.report(stream, playerKind, true);
-      // Tocou: é esta a fonte que o Smart Choice tenta primeiro ao continuar depois.
-      if (meta.id !== 'dev') si.rememberStream(video.id, stream);
+      if (isNoticeClip()) return noticeClip(worked);
+      worked();
     }
+  }
+  function worked() {
+    // Convertido no PC, a TV tocou outro formato: não prova nada sobre o arquivo original.
+    if (!triedTranscode) formats.report(stream, playerKind, true);
+    if (useAv) avplayer.noteResult(true);
+    // Tocou: é esta a fonte que o Smart Choice tenta primeiro ao continuar depois.
+    if (meta.id !== 'dev') si.rememberStream(video.id, stream);
   }
   function confirmStart() {
     hasPlayed = true;
@@ -676,14 +687,34 @@ function PlayerView(opts) {
   // Filme ou episódio com menos de 2 minutos é o aviso de um debrid, não o vídeo.
   function isNoticeClip() {
     const d = videoEl.duration;
-    return (meta.type === 'movie' || meta.type === 'series') && !addons.isTubeStream(stream) && !server.isTorrent(stream) &&
+    return !shortIsReal && (meta.type === 'movie' || meta.type === 'series') && !addons.isTubeStream(stream) && !server.isTorrent(stream) &&
       d > 0 && isFinite(d) && d < notice.NOTICE_MAX_SECONDS;
   }
-  function noticeClip() {
+  // Sem o nome do aviso no endereço, só é aviso se o título deveria durar bem mais que o clipe.
+  function expectedLonger() {
+    const ctx = lightContext();
+    const d = videoEl.duration;
+    if (ctx && ctx.runtimeEstimated === false) return ctx.runtimeMinutes * 60 > d * 3;
+    const info = si.parse(stream) || {};
+    return info.sizeScope === 'file' && info.sizeMb > 300;
+  }
+  let noticeCheck = null;
+  function noticeClip(onReal) {
     const failed = stream;
-    notice.probe(mediaUrl, 5000).then((kind) => {
-      if (!alive || failed !== stream) return;
-      sourceNotice(kind || 'short', failed);
+    if (!noticeCheck) {
+      noticeCheck = notice.probe(mediaUrl, 5000).then((kind) => {
+        noticeCheck = null;
+        if (!alive || failed !== stream) return false;
+        if (kind || expectedLonger()) {
+          sourceNotice(kind || 'short', failed);
+          return false;
+        }
+        shortIsReal = true;
+        return true;
+      });
+    }
+    noticeCheck.then((real) => {
+      if (real && alive && failed === stream && onReal) onReal();
     });
   }
 
@@ -725,17 +756,20 @@ function PlayerView(opts) {
     renderer.update(videoEl.currentTime);
     if (controlsOn) updateTimes();
   });
+  function finished() {
+    saveProgress();
+    if (opts.isSeries && nextVideo()) playNext();
+    else router.pop();
+  }
   videoEl.addEventListener('ended', () => {
     if (isNoticeClip()) {
       if (!workedReported) {
         workedReported = true;
-        noticeClip();
-      }
+        noticeClip(() => { worked(); finished(); });
+      } else noticeClip(finished);
       return;
     }
-    saveProgress();
-    if (opts.isSeries && nextVideo()) playNext();
-    else router.pop();
+    finished();
   });
   videoEl.addEventListener('error', () => {
     const err = videoEl.error;
@@ -752,14 +786,20 @@ function PlayerView(opts) {
     errorToken = sourceToken;
     const failed = stream;
     const generation = startGeneration;
-    const started = hasPlayed;
+    // playedMs sobrevive ao reabrir (reopenAt): um filme que já tocou não é suspeito de formato.
+    const started = hasPlayed || playedMs >= STARTED_MS;
+    // Antes de ler o arquivo, o <video> diz 4 também para rede/404 e o AVPlay diz 3 para qualquer erro.
+    const formatFault = !triedTranscode && (useAv ? code === 4 || (code === 3 && metaLoaded) : code === 3 || (code === 4 && metaLoaded));
     const probe = !started && !server.isTorrent(failed) ? notice.probe(mediaUrl, 5000) : Promise.resolve(null);
     Promise.all([errorDetails(code, why), probe]).then((r) => {
       let details = r[0];
       if (!alive || generation !== startGeneration || failed !== stream) return;
       if (r[1]) return sourceNotice(r[1], failed);
       // Só falha de formato/decodificação, antes de tocar, ensina sobre o formato (rede não).
-      if (!started && (code === 3 || code === 4)) formats.report(failed, playerKind, false);
+      if (!started && formatFault) formats.report(failed, playerKind, false);
+      if (useAv && !started && avplayer.noteResult(false)) {
+        toast(t('O AVPlay ainda não tocou nada nesta TV. Se continuar assim, use o player Proprietário em Ajustes › Player.'), 8000);
+      }
       si.markFailed(failed, lightContext());
       const next = autoFallback();
       if (next) {
@@ -1709,7 +1749,7 @@ function PlayerView(opts) {
     slowTimer = setTimeout(() => {
       if (!alive || hasPlayed) return;
       // Pausado por quem assiste: não é demora da fonte.
-      if (userPaused) return armSlow(delay);
+      if (userPaused && videoEl.paused) return armSlow(delay);
       checkSlow();
     }, typeof delay === 'number' ? delay : SLOW_MS);
   }

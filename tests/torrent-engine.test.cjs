@@ -214,6 +214,7 @@ test('addon trackers are merged with the defaults, deduplicated and capped', () 
   assert.ok(merged.every(x => /^(udp|https?):\/\//.test(x)));
   const many = Array.from({ length: 40 }, (_, i) => 'udp://t' + i + '.example:1/announce');
   assert.ok(createService.mergeTrackers(many).length <= 20);
+  assert.ok(createService.DEFAULT_TRACKERS.every(x => createService.mergeTrackers(many).indexOf(x) >= 0), 'defaults survive a long addon list');
 });
 
 test('content types match the container', () => {
@@ -221,4 +222,68 @@ test('content types match the container', () => {
   assert.equal(createService.mime('a.avi'), 'video/x-msvideo');
   assert.equal(createService.mime('a.MOV'), 'video/quicktime');
   assert.equal(createService.mime('a.mkv'), 'video/x-matroska');
+});
+
+async function realPeer(t, cacheBytes, size, extra) {
+  const createTorrent = require('create-torrent');
+  const torrentStream = require('torrent-stream');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sera-torrent-test-'));
+  const bytes = crypto.randomBytes(size);
+  fs.writeFileSync(path.join(dir, 'fixture.mp4'), bytes);
+  const torrent = await new Promise((resolve, reject) => createTorrent(bytes, { name: 'fixture.mp4', pieceLength: 16384, announceList: [] }, (error, result) => error ? reject(error) : resolve(result)));
+  const seed = torrentStream(torrent, { path: dir, tmp: dir, dht: false, tracker: false, connections: 4 });
+  seed.on('error', () => {});
+  t.after(() => new Promise(resolve => seed.destroy(() => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); })));
+  await once(seed, 'ready');
+  await new Promise(resolve => seed.listen(0, resolve));
+  const ctx = { downloads: [], engine: null, bytes };
+  const service = createService(Object.assign({ cacheBytes, metadataTimeout: 10000, pieceTimeout: 10000,
+    engineOptions: { dht: false, tracker: false }, onEngine: engine => { ctx.engine = engine; engine.on('download', index => ctx.downloads.push(index)); engine.connect('127.0.0.1:' + seed.port); } }, extra || {}));
+  t.after(() => service.close());
+  const server = http.createServer((req, res) => { if (!service.handle(req, res)) res.end('404'); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  ctx.port = server.address().port; ctx.service = service;
+  const start = await query(ctx.port, 'POST', '/api/torrent/start', { sessionId: 'real-' + cacheBytes, infoHash: seed.infoHash });
+  assert.equal(start.status, 200, start.data.toString());
+  ctx.url = JSON.parse(start.data).url;
+  return ctx;
+}
+
+for (const pieces of [2, 3, 5]) {
+  test('REVIEW sequential read with a ' + pieces + '-piece cache downloads every piece once and leaks no selection', { timeout: 25000 }, async t => {
+    const ctx = await realPeer(t, pieces * 16384, 256 * 1024);
+    const result = await query(ctx.port, 'GET', ctx.url, null, {});
+    assert.ok(result.data.equals(ctx.bytes), 'len ' + result.data.length);
+    assert.equal(new Set(ctx.downloads).size, ctx.downloads.length, 'dupes: ' + ctx.downloads.join(','));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.deepEqual(ctx.engine.selection.map(s => s.from + ':' + s.priority), []);
+    assert.ok(ctx.service.status().cacheBytes <= pieces * 16384);
+  });
+}
+
+test('REVIEW chunked sequential Range requests (player style) download every piece once', { timeout: 25000 }, async t => {
+  const ctx = await realPeer(t, 3 * 16384, 256 * 1024);
+  for (let from = 0; from < 256 * 1024; from += 10000) {
+    const to = Math.min(256 * 1024 - 1, from + 9999);
+    const result = await query(ctx.port, 'GET', ctx.url, null, { Range: 'bytes=' + from + '-' + to });
+    assert.deepEqual(result.data, ctx.bytes.slice(from, to + 1));
+  }
+  assert.equal(new Set(ctx.downloads).size, ctx.downloads.length, 'dupes: ' + ctx.downloads.join(','));
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(ctx.engine.selection.map(s => s.from + ':' + s.priority), []);
+});
+
+test('REVIEW overlapping Range requests (new opened before old closed) stay correct', { timeout: 25000 }, async t => {
+  const ctx = await realPeer(t, 3 * 16384, 256 * 1024);
+  const first = new Promise(resolve => { const r = http.get({ hostname: '127.0.0.1', port: ctx.port, path: ctx.url, headers: { Range: 'bytes=0-' } }, res => { res.on('data', () => {}); res.on('error', () => resolve()); res.on('close', resolve); }); r.on('error', () => resolve()); });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const second = await query(ctx.port, 'GET', ctx.url, null, { Range: 'bytes=100000-200000' });
+  assert.deepEqual(second.data, ctx.bytes.slice(100000, 200001));
+  await first;
+  const third = await query(ctx.port, 'GET', ctx.url, null, { Range: 'bytes=0-50000' });
+  assert.deepEqual(third.data, ctx.bytes.slice(0, 50001));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.deepEqual(ctx.engine.selection.filter(s => s.priority === 1).map(s => s.from), []);
+  assert.ok(ctx.engine.selection.length <= 2, JSON.stringify(ctx.engine.selection.map(s => s.from + ':' + s.priority)));
 });

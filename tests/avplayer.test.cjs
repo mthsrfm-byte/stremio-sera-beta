@@ -367,3 +367,14 @@ test('the debrid service comes from the source tag and account notices group its
   assert.equal(n.accountWide('downloading'), false);
   assert.ok(n.message('access', rd).indexOf('Real-Debrid') === 0);
 });
+
+test('after three AVPlay failures with nothing ever played, the viewer is told once about the other player', () => {
+  const { api } = avHarness();
+  assert.equal(api.noteResult(false), false);
+  assert.equal(api.noteResult(false), false);
+  assert.equal(api.noteResult(false), true);
+  assert.equal(api.noteResult(false), false, 'only once');
+  const other = avHarness().api;
+  other.noteResult(true);
+  for (let i = 0; i < 5; i++) assert.equal(other.noteResult(false), false, 'a TV where AVPlay works never warns');
+});

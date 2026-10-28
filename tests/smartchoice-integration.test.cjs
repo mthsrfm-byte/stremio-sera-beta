@@ -116,7 +116,7 @@ function playerHarness(options) {
       createNativeSessionId: () => 'session-' + (++sessionSequence), stopNative: id => { stopped.push(id); return Promise.resolve(); },
       toPlayable: (stream, series, options) => { const d = deferred(); requests.push({ stream, options, ...d }); return d.promise; } },
     addons: { isTubeStream: () => false, fetchSubtitles: () => Promise.resolve([]), fetchStreams: () => Promise.resolve(o.nextStreams || []) },
-    stremio: { saveProgress: (...args) => saved.push(args) }, skip: {}, hero: { logo: () => '', background: () => '' },
+    stremio: { saveProgress: (...args) => saved.push(args) }, skip: { getSegments: () => Promise.resolve([]) }, hero: { logo: () => '', background: () => '' },
     menu: (title, items, options) => { menuOptions = options; }, toast: noop, fmtTime: () => '', timeHM: () => '',
     choiceDialog: (...args) => dialogs.push(args), eventTime: () => '', isFavorite: () => false, toggleFavorite: () => Promise.resolve(),
     router: { tabView: () => null, pop: noop }, sortedVideos: () => videos, openDetails: (...args) => opened.push(args), t: value => value,
@@ -238,15 +238,17 @@ test('a short notice clip from a debrid is not the movie: no progress, next sour
 });
 
 test('a format error before starting teaches the format; a network error does not', async () => {
-  for (const [code, learns] of [[4, true], [2, false]]) {
+  // <video> answers 4 also for a 404/dead link before reading the file: 4 only teaches after metadata.
+  for (const [code, metadata, learns] of [[4, true, true], [3, false, true], [4, false, false], [2, true, false]]) {
     const h = playerHarness({ stream: HTTP_A, streams: [HTTP_A, HTTP_C] });
     h.view.onShow(); await tick();
     h.requests[0].resolve({ url: HTTP_A.url }); await tick();
     h.video.src = HTTP_A.url;
+    if (metadata) h.video.listeners.loadedmetadata();
     h.video.error = { code };
     h.video.listeners.error();
     await tick();
-    assert.deepEqual(h.reports.map(r => r[2]), learns ? [false] : [], 'code ' + code);
+    assert.deepEqual(h.reports.map(r => r[2]), learns ? [false] : [], 'code ' + code + ' metadata ' + metadata);
     assert.equal(h.probes.length, 1, 'the link is checked for a debrid notice first');
     assert.equal(h.requests.length, 2, 'next source');
     h.view.destroy();
