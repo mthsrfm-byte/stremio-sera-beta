@@ -1,6 +1,6 @@
 {
   "version": "1.4.0",
-  "commit": "83becc5957b3740d8d10d7982762615adf7a736e",
-  "date": "2026-10-28T00:42:10+00:00",
-  "message": "AVPlay: correções da revisão de runtime da Samsung"
+  "commit": "3b688e6f8c3eabde22cb46f0b3877af5bbe059ec",
+  "date": "2026-10-27T21:56:02-03:00",
+  "message": "Beta 1.4.0: player AVPlay, início robusto, formatos aprendidos e motor torrent mais estável"
 }
