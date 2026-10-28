@@ -235,6 +235,59 @@ test('leaving the app suspends AVPlay and coming back restores it', () => {
   assert.equal((document.listeners.visibilitychange || []).length, 0);
 });
 
+test('play waits for the seek callback, and a seek without callback ends when the TV reaches the point', () => {
+  const { av, el, events } = avHarness();
+  let pendingOk = null;
+  av.seekTo = function (ms, ok) { av.calls.push(['seek', ms]); pendingOk = ok; };
+  el.autoplay = true;
+  el.addEventListener('loadedmetadata', () => { el.currentTime = 600; });
+  el.src = 'http://x/a.mkv';
+  av.prepared.ok();
+  assert.equal(av.calls.filter((c) => c[0] === 'play').length, 0, 'no play while the seek is pending');
+  pendingOk();
+  assert.equal(av.calls.filter((c) => c[0] === 'play').length, 1);
+  assert.ok(events.indexOf('seeked') < events.indexOf('playing'));
+  // Sem retorno do seekTo: a TV informando o ponto pedido encerra o avanço.
+  el.currentTime = 1200;
+  assert.equal(el.currentTime, 1200);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 2000;
+  try { av.listener.oncurrentplaytime(1200500); } finally { Date.now = realNow; }
+  assert.equal(events.filter((e) => e === 'seeked').length, 2);
+  av.listener.oncurrentplaytime(1201000);
+  assert.equal(el.currentTime, 1201);
+  el.avDestroy();
+});
+
+test('background pauses before suspending and chosen tracks come back after a reopen', async () => {
+  const { av, el, document } = avHarness();
+  av.tracks = [{ index: 1, type: 'AUDIO', extra_info: '{"language":"eng"}' }, { index: 2, type: 'AUDIO', extra_info: '{"language":"por"}' }, { index: 3, type: 'TEXT', extra_info: '{"track_lang":"por"}' }];
+  av.current = [{ type: 'AUDIO', index: 1 }];
+  el.autoplay = true;
+  el.src = 'http://x/a.mkv';
+  av.prepared.ok();
+  el.audioTracks[1].enabled = true;
+  el.avSelectText(3, () => {});
+  document.hidden = true; document.fire('visibilitychange');
+  assert.deepEqual(av.calls.slice(-2), [['pause'], ['suspend']]);
+  assert.equal(el.paused, true);
+  document.hidden = false; document.fire('visibilitychange');
+  el.load();
+  await wait(350);
+  av.prepared.ok();
+  av.calls.length = 0;
+  av.listener.oncurrentplaytime(1000);
+  assert.deepEqual(av.calls.filter((c) => c[0] === 'track'), [['track', 'AUDIO', 2], ['track', 'TEXT', 3]]);
+  el.avDestroy();
+});
+
+test('a generic error name still reads the AVPlay code from the message', () => {
+  const { av, el } = avHarness();
+  el.src = 'http://x/a.mkv';
+  av.prepared.fail({ name: 'UnknownError', message: 'PLAYER_ERROR_CONNECTION_FAILED' });
+  assert.equal(el.error.code, 2);
+});
+
 // ---------- Formatos aprendidos ----------
 function formatsApi() {
   return bundle('formats.js', { settings: {}, device: new Map(), globals: {} });

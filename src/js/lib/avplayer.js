@@ -36,11 +36,20 @@ export function ensureWebapis() {
 const SETTLE_MS = 300; // a TV costuma recusar abrir logo depois de fechar um vídeo que tocava
 const SEEK_GRACE_MS = 6000;
 const JUMP_SLACK_MS = 3000;
+const SEEK_STUCK_MS = 12000; // sem retorno do seekTo: segue pelo tempo que a TV informar
+const BUFFER_TIMEOUT_S = 60; // padrão da TV é 20 s: pouco para torrent começar
 // Buffer: segundos carregados antes de começar e antes de voltar depois de esvaziar.
 export const BUFFERS = { normal: null, more: [8, 10], most: [15, 20] };
 
+// A TV às vezes manda WebAPIException com name genérico (UnknownError) e o código no message.
+function errorText(err) {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  return [err.name, err.message, err.code].filter(Boolean).join(' ') || String(err);
+}
+
 function errorCode(err) {
-  const text = String(err && (err.name || err.message || err) || '');
+  const text = errorText(err);
   if (/NOT_SUPPORTED|UNSUPPORTED|CODEC|FORMAT|DRM|CORRUPT/i.test(text)) return 4;
   if (/CONNECTION|NETWORK|INVALID_URI|TIMEOUT|HTTP|SOCKET|DISCONNECT/i.test(text)) return 2;
   return 3;
@@ -96,6 +105,11 @@ export function create() {
   let lastJumpTo = -1;
   let onSubtitle = null;
   let textIndex = null;
+  // Escolhas de faixa que sobrevivem a uma reabertura (travamento, volta do segundo plano).
+  let wantText = null;
+  let wantAudio = null;
+  let tracksApplied = false;
+  let seekTimer = null;
 
   function fire(type) {
     let e;
@@ -111,7 +125,8 @@ export function create() {
   function screenSaver(on) {
     try {
       const ac = window.webapis.appcommon;
-      ac.setScreenSaver(on ? ac.AppCommonScreenSaverState.SCREEN_SAVER_ON : ac.AppCommonScreenSaverState.SCREEN_SAVER_OFF);
+      const noop = () => {};
+      ac.setScreenSaver(on ? ac.AppCommonScreenSaverState.SCREEN_SAVER_ON : ac.AppCommonScreenSaverState.SCREEN_SAVER_OFF, noop, noop);
     } catch (e) { /* TV sem appcommon */ }
   }
 
@@ -126,6 +141,7 @@ export function create() {
     seekingTo = null;
     pendingSeek = null;
     suspended = false;
+    clearTimeout(seekTimer);
     try { av.stop(); } catch (e) { /* já parado */ }
     try { av.close(); } catch (e) { /* já fechado */ }
     if (!paused) {
@@ -136,7 +152,7 @@ export function create() {
   }
 
   function setError(err) {
-    error = { code: errorCode(err), message: String(err && (err.name || err.message || err) || 'AVPlay') };
+    error = { code: errorCode(err), message: errorText(err) || 'AVPlay' };
     ready = false;
     paused = true;
     screenSaver(true);
@@ -163,6 +179,7 @@ export function create() {
     lastTickMs = -1;
     lastJumpTo = -1;
     textIndex = null;
+    tracksApplied = false;
     wantPlay = autoplay;
     if (!url) return;
     const go = () => {
@@ -171,6 +188,7 @@ export function create() {
       try {
         av.open(url);
         applyBuffer();
+        try { av.setTimeoutForBuffering(BUFFER_TIMEOUT_S); } catch (e) { /* firmware sem ajuste */ }
         av.setListener(listener(mine));
         fire('loadstart');
         av.prepareAsync(() => {
@@ -212,8 +230,14 @@ export function create() {
         if (!paused) fire('playing');
       },
       oncurrentplaytime: (ms) => {
-        if (mine !== token || seekingTo !== null) return;
+        if (mine !== token) return;
+        // O seekTo não respondeu, mas a TV já está no ponto pedido: o avanço terminou.
+        if (seekingTo !== null) {
+          if (Math.abs(ms / 1000 - seekingTo) < 3 && Date.now() - lastSeekAt > 1500) finishSeek(mine, ms);
+          return;
+        }
         if (fixJump(ms)) return;
+        if (!tracksApplied) applyTracks();
         cur = ms / 1000;
         fire('timeupdate');
       },
@@ -238,6 +262,9 @@ export function create() {
           return;
         }
         setError(err);
+      },
+      onerrormsg: (id, msg) => {
+        if (mine === token && error && msg) error.message = errorText(id) + ' ' + String(msg).slice(0, 300);
       },
       onsubtitlechange: (duration, text) => {
         if (mine === token && onSubtitle && textIndex !== null) onSubtitle(String(text || ''), Number(duration) || 0);
@@ -269,6 +296,26 @@ export function create() {
     return true;
   }
 
+  // Faixas escolhidas antes de uma reabertura: aplicadas quando a TV já está tocando.
+  function applyTracks() {
+    tracksApplied = true;
+    if (wantAudio !== null) selectAudio(wantAudio);
+    if (wantText !== null && onSubtitle) selectText(wantText);
+  }
+
+  function finishSeek(mine, ms) {
+    if (mine !== token || seekingTo === null) return;
+    clearTimeout(seekTimer);
+    seekingTo = null;
+    cur = ms / 1000;
+    lastTickMs = ms;
+    lastTickWall = Date.now();
+    fire('seeked');
+    fire('timeupdate');
+    // A Samsung pede esperar o retorno do seekTo antes de outra chamada: o play espera aqui.
+    if (wantPlay && paused) doPlay();
+  }
+
   function seek(seconds, internal) {
     const ms = Math.max(0, Math.floor(seconds * 1000));
     if (!ready) {
@@ -277,19 +324,13 @@ export function create() {
       return;
     }
     const mine = token;
-    if (!internal) lastSeekAt = Date.now();
+    lastSeekAt = internal ? lastSeekAt : Date.now();
     seekingTo = seconds;
     ended = false;
     fire('seeking');
-    const done = () => {
-      if (mine !== token) return;
-      seekingTo = null;
-      cur = ms / 1000;
-      lastTickMs = ms;
-      lastTickWall = Date.now();
-      fire('seeked');
-      fire('timeupdate');
-    };
+    const done = () => finishSeek(mine, ms);
+    clearTimeout(seekTimer);
+    seekTimer = setTimeout(done, SEEK_STUCK_MS);
     try {
       av.seekTo(ms, done, done);
     } catch (e) {
@@ -299,7 +340,7 @@ export function create() {
 
   function doPlay() {
     wantPlay = true;
-    if (!ready) return;
+    if (!ready || seekingTo !== null) return;
     const st = state();
     if (st === 'PLAYING' && !paused) return;
     try { av.play(); } catch (e) { return; }
@@ -329,6 +370,8 @@ export function create() {
   function onVisibility() {
     if (!ready) return;
     if (document.hidden) {
+      // Como no StremioK: pausa antes de suspender; na volta fica pausado (OK continua).
+      if (!paused) doPause();
       try { av.suspend(); suspended = true; } catch (e) { suspended = false; }
       return;
     }
@@ -337,6 +380,8 @@ export function create() {
     try {
       av.restore();
       try { av.setDisplayRect(0, 0, 1920, 1080); } catch (e) { /* plano já ocupa a tela */ }
+      // restore() sem bPrepare retoma sozinho em alguns firmwares: mantém o estado que o app mostra.
+      if (paused && state() === 'PLAYING') { try { av.pause(); } catch (e) { /* segue */ } }
     } catch (e) {
       const at = cur;
       const play = !paused;
@@ -366,15 +411,29 @@ export function create() {
         get: () => index === current,
         set: (on) => {
           if (!on || index === current) return;
-          try { av.setSelectTrack('AUDIO', index); } catch (e) {
-            try { av.setSelectTrack('AUDIO', String(index)); } catch (e2) { return; }
-          }
-          current = index;
+          wantAudio = index;
+          if (selectAudio(index)) current = index;
         },
       });
       out.push(track);
     }
     return out;
+  }
+
+  function selectAudio(index) {
+    try { av.setSelectTrack('AUDIO', index); } catch (e) {
+      try { av.setSelectTrack('AUDIO', String(index)); } catch (e2) { return false; }
+    }
+    return true;
+  }
+
+  function selectText(index) {
+    try { av.setSilentSubtitle(false); } catch (e) { /* segue */ }
+    try { av.setSelectTrack('TEXT', index); } catch (e) {
+      try { av.setSelectTrack('TEXT', String(index)); } catch (e2) { return false; }
+    }
+    textIndex = index;
+    return true;
   }
 
   function textList() {
@@ -423,21 +482,21 @@ export function create() {
     onSubtitle = cb || null;
     if (index === null || index === undefined) {
       textIndex = null;
+      wantText = null;
       try { av.setSilentSubtitle(true); } catch (e) { /* sem legenda */ }
       return true;
     }
-    try { av.setSilentSubtitle(false); } catch (e) { /* segue */ }
-    try { av.setSelectTrack('TEXT', index); } catch (e) {
-      try { av.setSelectTrack('TEXT', String(index)); } catch (e2) { return false; }
-    }
-    textIndex = index;
-    return true;
+    wantText = index;
+    return selectText(index);
   };
   host.avDestroy = () => {
     document.removeEventListener('visibilitychange', onVisibility);
     src = '';
     onSubtitle = null;
+    wantText = null;
+    wantAudio = null;
     closeAv();
+    try { av.setListener({}); } catch (e) { /* solta os retornos deste vídeo */ }
   };
   return host;
 }

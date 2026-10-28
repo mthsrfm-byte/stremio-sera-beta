@@ -981,7 +981,7 @@ function PlayerView(opts) {
   let recoveries = 0;
   let lastRecoveryAt = 0;
   function watchdog() {
-    if (!alive || gaveUp || !hasPlayed || !mediaUrl || videoEl.paused || seekTarget !== null || videoEl.ended) {
+    if (!alive || gaveUp || !hasPlayed || !mediaUrl || videoEl.paused || seekTarget !== null || videoEl.ended || document.hidden) {
       stuckSince = 0;
       return;
     }

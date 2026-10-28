@@ -253,7 +253,7 @@ body.oled .details-shade { background: linear-gradient(to right, #000 25%, rgba(
 .player video { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; background: #000; }
 /* AVPlay: o vídeo é um plano da TV atrás da página; tudo acima dele precisa ficar transparente. */
 .player .av-host, .player .av-plane { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
-html.av-playing, body.av-playing, body.av-playing #app, body.av-playing .view.player.av, body.oled.av-playing .view.player.av { background: transparent; background-color: transparent; }
+html.av-playing, html.av-playing body, html.av-playing body #app, html.av-playing body .view.player.av { background: transparent; background-color: transparent; }
 .subs { position: absolute; left: 160px; right: 160px; bottom: 56px; text-align: center; pointer-events: none; font-family: 'Nata Sans', 'Montserrat', sans-serif; font-size: 64px; font-weight: 700; line-height: 1.25; color: #fff; -webkit-transition: -webkit-transform 0.25s; transition: transform 0.25s; }
 .subs span { display: inline; white-space: pre-line; }
 .subs.box span { background: rgba(0,0,0,0.75); padding: 2px 14px; border-radius: 6px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
