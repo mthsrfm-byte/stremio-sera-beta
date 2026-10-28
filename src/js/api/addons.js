@@ -335,10 +335,18 @@ export function catalogTitle(entry) {
   return name + ' · ' + typeName;
 }
 
+// Teto de itens por resposta de addon (a lista inteira fica na memória enquanto a tela existe).
+export const MAX_CATALOG_ITEMS = 1000;
+export const MAX_STREAMS_PER_ADDON = 500;
+export const MAX_SUBTITLES_PER_ADDON = 300;
+function capped(list, max) {
+  return Array.isArray(list) ? (list.length > max ? list.slice(0, max) : list) : [];
+}
+
 export function fetchCatalog(entry, extra) {
   // Timeout menor: addon lento não segura a fila de fileiras.
   return cachedJSON(url(entry.addon, 'catalog', entry.catalog.type, entry.catalog.id, extra), 15 * 60000, { timeout: 12000 }).then(
-    (r) => (r && r.metas) || []
+    (r) => capped(r && r.metas, MAX_CATALOG_ITEMS)
   );
 }
 
@@ -375,7 +383,7 @@ export function fetchStreams(type, id, onAddon) {
     sources.map((a) =>
       getJSON(url(a, 'stream', type, id), { timeout: 30000 })
         .then((r) => {
-          const streams = ((r && r.streams) || []).map((s) => Object.assign({ addon: a.manifest.name || a.manifest.id }, s));
+          const streams = capped(r && r.streams, MAX_STREAMS_PER_ADDON).filter((s) => s && typeof s === 'object').map((s) => Object.assign({ addon: a.manifest.name || a.manifest.id }, s));
           if (onAddon) onAddon(a, streams);
           return streams;
         })
@@ -393,7 +401,7 @@ export function fetchSubtitles(type, id, extra, onAddon) {
   return Promise.all(
     sources.map((a) =>
       getJSON(url(a, 'subtitles', type, id, extra), { timeout: 15000 })
-        .then((r) => ((r && r.subtitles) || []).map((s) => Object.assign({ addon: a.manifest.name }, s)))
+        .then((r) => capped(r && r.subtitles, MAX_SUBTITLES_PER_ADDON).filter((s) => s && typeof s === 'object').map((s) => Object.assign({ addon: a.manifest.name }, s)))
         .catch(() => [])
         .then((list) => {
           if (onAddon) onAddon(list);

@@ -82,7 +82,7 @@ export function refresh() {
   const list = urls();
   inFlight = Promise.all(
     list.map((u, i) =>
-      getText(SERVICE + encodeURIComponent(u), { timeout: 30000, quiet: true }).then(
+      getText(SERVICE + encodeURIComponent(u), { timeout: 30000, quiet: true, maxBytes: 12 * 1024 * 1024 }).then(
         (text) => parse(text, COLORS[i % COLORS.length]),
         (e) => {
           log.warn('Agenda: não baixou', e.message);

@@ -9,18 +9,26 @@ TV ainda precisa ser validada.
 ## Limites de execução
 
 - Um torrent e uma leitura HTTP ativos por vez; uma nova faixa Range cancela a anterior.
-- Cache de peças verificadas limitado a **8 MiB**, sem arquivos de vídeo no disco.
-- Seleciona apenas a peça solicitada pelo player; o arquivo inteiro não é selecionado.
+- Cache de peças verificadas de **um sexto da memória livre da TV, entre 8 e 24 MiB**, medido a
+  cada torrent, sem arquivos de vídeo no disco.
+- Seleciona a peça solicitada pelo player e **lê adiante até 2 peças** em prioridade baixa, quantas
+  couberem no cache ao lado da que está sendo enviada; o arquivo inteiro não é selecionado. Um
+  avanço/retrocesso descarta a leitura antecipada fora do novo ponto.
 - Até **12 conexões** e **96 candidatos de peers** registrados no swarm.
+- Os trackers do addon são **somados** a 6 trackers públicos (sem repetir, até 20).
 - Peças maiores que **4 MiB**, metadados maiores que **512 KiB**, mais de **32.768 peças**
   ou **512 arquivos** são recusados para limitar o custo de torrents muito grandes.
 - Frames de peers limitados a **64 KiB**; dados inválidos encerram aquele peer.
-- Metadados têm prazo de 60 s; leitura sem dados tem prazo de 45 s; sessão sem leitura
-  por 10 minutos é encerrada. Depois de uma pausa longa, pode ser necessário reabrir o vídeo.
+- Metadados têm prazo de 60 s; uma peça que fica **45 s sem receber nenhum dado** falha (uma peça
+  lenta que continua chegando não falha); sessão sem leitura por 10 minutos é encerrada. Depois de
+  uma pausa longa, pode ser necessário reabrir o vídeo.
 - Peças removidas do cache têm o bitfield **e o scheduler** reinicializados. Voltar no vídeo
-  pode baixar novamente essas peças. Cancelar uma leitura também descarta peças parciais.
+  pode baixar novamente essas peças.
+- Cancelar uma leitura **guarda a peça parcial** para o próximo Range (o player da Samsung costuma
+  pedir de novo o mesmo trecho), no máximo 2 peças e nunca além do orçamento do cache em bytes
+  parciais; as mais antigas são descartadas primeiro. Uma peça que falhou por prazo é descartada.
 
-**8 MiB é o limite do cache de peças completas**, não da memória total da TV ou do processo.
+**O limite do cache vale para peças completas** (e, à parte, para as parciais guardadas), não para a memória total da TV ou do processo.
 Sockets, metadados, peças em trânsito, buffers HTTP e o player também usam memória. O RSS
 mostrado no diagnóstico pertence ao processo Node compartilhado do TizenBrew.
 
@@ -31,7 +39,8 @@ no bundle gerado. A troca de metadados BEP9 foi limitada em `torrent-metadata.cj
 ## API local
 
 O serviço beta atende em `127.0.0.1:8094`. As rotas de torrent aceitam apenas conexões
-locais; não expõem o motor para outros dispositivos da rede.
+locais que citam o endereço local no `Host` (um nome externo apontando para a TV é recusado);
+não expõem o motor para outros dispositivos da rede. `/api/quit` também só atende a própria TV.
 
 - `GET /api/torrent/status`: capacidades, sessão, peers, cache, parciais, RSS e último erro.
 - `POST /api/torrent/start`: `{sessionId, infoHash, fileIdx?, sources?, season?, episode?}`.

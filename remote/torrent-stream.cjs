@@ -190,6 +190,14 @@ var torrentStream = function (link, opts, cb) {
       return pieces.reduce(function (sum, p) { return sum + (p ? p.length - p.missing : 0) }, 0)
     }
 
+    // Beta: bytes already received for one piece (complete pieces count as their full length).
+    engine.pieceProgress = function (index) {
+      if (index < 0 || index >= pieces.length) return 0
+      var p = pieces[index]
+      if (!p) return engine.bitfield.get(index) ? (index === pieces.length - 1 ? pieceRemainder : pieceLength) : 0
+      return p.length - p.missing
+    }
+
     process.nextTick(function () {
       // Gives the user a chance to call engine.listen(PORT) on the same tick,
       // so discovery will start using the correct torrent port.

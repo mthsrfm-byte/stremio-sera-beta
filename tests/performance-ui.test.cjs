@@ -268,6 +268,8 @@ function httpHarness() {
     send() {}
     succeed(value) { this.status = 200; this.responseText = JSON.stringify(value); this.onload(); }
     fail() { this.onerror(); }
+    headers(len) { this.readyState = 2; this.getResponseHeader = () => String(len); this.onreadystatechange(); }
+    abort() { this.aborted = true; }
   }
   const context = load('src/js/lib/http.js', {
     XMLHttpRequest: XHR, Date: { now: () => clock }, log: { warn() {} }, t: (value) => value,
@@ -295,6 +297,24 @@ test('metadata cache evicts least recently used entries instead of accumulating 
   assert.equal(requests.length, count + 1, 'oldest catalog is fetched again after eviction');
   requests[requests.length - 1].succeed({ title: 'Refetched' });
   await replaced;
+});
+
+test('responses above the size limit are refused before or while downloading', async () => {
+  const { context: c, requests } = httpHarness();
+  const declared = c.getJSON('big-declared');
+  requests[0].headers(4 * 1024 * 1024 + 1);
+  await assert.rejects(declared, (e) => e.tooLarge === true);
+  assert.equal(requests[0].aborted, true);
+  const streaming = c.getText('big-stream');
+  requests[1].onprogress({ loaded: 5 * 1024 * 1024 + 1 });
+  await assert.rejects(streaming, (e) => e.tooLarge === true);
+  const unpacked = c.getJSON('gzip-bomb', { maxBytes: 100 });
+  requests[2].succeed({ text: 'x'.repeat(200) });
+  await assert.rejects(unpacked, (e) => e.tooLarge === true);
+  const small = c.getJSON('small');
+  requests[3].headers(10);
+  requests[3].succeed({ ok: true });
+  assert.equal((await small).ok, true);
 });
 
 test('metadata cache limits retention of large responses even below the item limit', async () => {

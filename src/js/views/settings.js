@@ -17,6 +17,8 @@ import * as calendar from '../api/calendar.js';
 import * as reco from '../api/recommend.js';
 import * as intro from '../lib/intro.js';
 import * as screensaver from '../lib/screensaver.js';
+import * as avplayer from '../lib/avplayer.js';
+import * as formats from '../lib/formats.js';
 import { getJSON, recentErrors } from '../lib/http.js';
 import { topbar, toast, menu, confirmDialog, refreshProfileChips, refreshTabs } from '../ui.js';
 import * as router from '../router.js';
@@ -296,6 +298,58 @@ export function SettingsView() {
       .catch(() => toast(t('O serviço da TV não respondeu. Abra o Seraflix pelo TizenBrew e tente de novo.'), 6000));
   }
 
+  // ---- Player: AVPlay (nativo da Samsung) ou o proprietário (<video>), buffer e formatos aprendidos ----
+  const BUFFER_NAMES = { normal: 'Padrão da TV', more: 'Mais (8 s)', most: 'Máximo (15 s)' };
+  const FORMAT_STATUS = { ok: 'Funciona', bad: 'Não funciona', suspect: 'Em observação' };
+  function playerSection(s) {
+    body.appendChild(h('div.set-section', { text: t('Player') }));
+    const avOk = avplayer.available();
+    const current = avplayer.playerName();
+    body.appendChild(row(t('Player de vídeo'),
+      avOk ? t('AVPlay é o player nativo da Samsung: lista as faixas de áudio e as legendas embutidas sem o PC. O proprietário é o player HTML5 das versões anteriores.')
+        : t('Esta TV não ofereceu o AVPlay ao app; usando o proprietário.'),
+      t(avplayer.PLAYERS[current]), () => {
+        menu(t('Player de vídeo'), [
+          { label: t(avplayer.PLAYERS.avplay), sub: avOk ? t('Recomendado na Samsung') : t('Indisponível nesta TV'), value: 'avplay', checked: current === 'avplay' },
+          { label: t(avplayer.PLAYERS.html5), sub: t('Player HTML5, como antes'), value: 'html5', checked: current === 'html5' },
+        ], {
+          onPick: (v) => {
+            if (v === 'avplay' && !avOk) return toast(t('O AVPlay não está disponível nesta TV.'));
+            store.saveSettings({ player: v });
+            toast(t('Vale para o próximo vídeo.'));
+            render();
+          },
+        });
+      }));
+    if (current === 'avplay') {
+      const buf = s.playerBuffer || 'normal';
+      body.appendChild(row(t('Buffer do AVPlay'), t('Segundos carregados antes de começar e depois de travar. Mais buffer ajuda em torrent e internet lenta.'), t(BUFFER_NAMES[buf] || BUFFER_NAMES.normal), () => {
+        menu(t('Buffer do AVPlay'), Object.keys(BUFFER_NAMES).map((k) => ({ label: t(BUFFER_NAMES[k]), value: k, checked: k === buf })), {
+          onPick: (v) => {
+            store.saveSettings({ playerBuffer: v });
+            render();
+          },
+        });
+      }));
+    }
+    const learned = formats.list(current);
+    const bad = learned.filter((x) => x.status === 'bad').length;
+    body.appendChild(row(t('Formatos aprendidos'),
+      t('O Smart Choice evita o que já falhou nesta TV com dois arquivos diferentes. OK num formato o volta para "sem histórico".'),
+      learned.length ? (bad ? t('{n} não funcionam', { n: bad }) : t('{n} conhecidos', { n: learned.length })) : t('nenhum ainda'), () => {
+        const items = learned.map((x) => ({ label: formats.label(x.feature), sub: t(FORMAT_STATUS[x.status] || x.status) + (x.files ? ' · ' + t('{n} arquivos com falha', { n: x.files }) : ''), value: x.feature, checked: x.status === 'ok' }));
+        if (items.length) items.push({ label: t('Esquecer todos'), value: '*' });
+        menu(t('Formatos aprendidos'), items, {
+          empty: t('Nada aprendido ainda. Cada vídeo que toca (ou falha por formato) ensina algo.'),
+          onPick: (v) => {
+            formats.forget(current, v === '*' ? '' : v);
+            toast(v === '*' ? t('Formatos esquecidos.') : t('{f}: sem histórico', { f: formats.label(v) }));
+            render();
+          },
+        });
+      }));
+  }
+
   function toggle(on) {
     return h('div.toggle', { cls: on ? 'on' : '' }, h('i'));
   }
@@ -446,6 +500,7 @@ export function SettingsView() {
         ], {})).catch(() => toast(t('Abra a beta pelo TizenBrew para iniciar o serviço da TV.'), 6000));
       }));
     }
+    if (!IS_WEB) playerSection(s);
     body.appendChild(h('div.set-section', { text: t('Servidor externo (opcional)') }));
     const st = server.lastStatus();
     const stText = !s.serverUrl ? t('não configurado') : st.ok && st.url === server.baseUrl() ? t('conectado ✓') : t('sem resposta');

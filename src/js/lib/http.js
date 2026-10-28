@@ -11,16 +11,48 @@ function shortUrl(url) {
   return String(url).split('?')[0].replace(/^https?:\/\//, '');
 }
 
+// Teto por resposta: um addon ou servidor quebrado não enche a memória da TV com uma resposta só.
+// JSON até 4 MB (o meta de séries longas passa de 1 MB), texto (legendas) até 5 MB.
+export const MAX_JSON_BYTES = 4 * 1024 * 1024;
+export const MAX_TEXT_BYTES = 5 * 1024 * 1024;
+
+function tooLarge(url, max) {
+  const err = new Error(t('Resposta grande demais de {url} (mais de {mb} MB)', { url: url, mb: Math.round(max / 1048576) }));
+  err.status = 0;
+  err.tooLarge = true;
+  return err;
+}
+
 export function request(method, url, body, opts) {
   const o = opts || {};
   const started = Date.now();
+  const max = o.maxBytes || (o.raw ? MAX_TEXT_BYTES : MAX_JSON_BYTES);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let aborted = false;
+    const abortLarge = () => {
+      if (aborted) return;
+      aborted = true;
+      try { xhr.abort(); } catch (e) { /* já encerrado */ }
+      reject(tooLarge(url, max));
+    };
     xhr.open(method, url, true);
     xhr.timeout = o.timeout || 20000;
     if (body !== undefined && body !== null) xhr.setRequestHeader('Content-Type', 'application/json');
     if (o.headers) for (const k in o.headers) xhr.setRequestHeader(k, o.headers[k]);
+    // O tamanho anunciado já recusa antes de baixar; o progresso corta quem não anuncia ou mente.
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== 2) return;
+      const declared = Number(xhr.getResponseHeader('Content-Length'));
+      if (declared > max) abortLarge();
+    };
+    xhr.onprogress = (e) => {
+      if (e && e.loaded > max) abortLarge();
+    };
     xhr.onload = () => {
+      if (aborted) return;
+      // responseText já descompactado: uma resposta gzip pequena não vira dezenas de MB.
+      if (xhr.responseText && xhr.responseText.length > max) return abortLarge();
       if (xhr.status >= 200 && xhr.status < 300) {
         // Usado pelo cache sem serializar de novo objetos grandes na thread da TV.
         if (o._onResponseSize) o._onResponseSize(xhr.responseText.length * 2);
@@ -41,11 +73,13 @@ export function request(method, url, body, opts) {
       }
     };
     xhr.onerror = () => {
+      if (aborted) return;
       const err = new Error(t('Falha de rede em {url}', { url: url }));
       err.status = 0;
       reject(err);
     };
     xhr.ontimeout = () => {
+      if (aborted) return;
       const err = new Error(t('Tempo esgotado em {url}', { url: url }));
       err.status = 0;
       err.timeout = true;
@@ -55,7 +89,7 @@ export function request(method, url, body, opts) {
   }).catch((err) => {
     err.ms = Date.now() - started;
     if (!/127\.0\.0\.1|localhost/.test(url)) {
-      netErrors.unshift({ at: Date.now(), url: shortUrl(url), msg: err.timeout ? 'tempo esgotado' : err.status ? 'HTTP ' + err.status : err.status === 0 ? 'falha de rede' : 'resposta inválida', ms: err.ms });
+      netErrors.unshift({ at: Date.now(), url: shortUrl(url), msg: err.tooLarge ? 'resposta grande demais' : err.timeout ? 'tempo esgotado' : err.status ? 'HTTP ' + err.status : err.status === 0 ? 'falha de rede' : 'resposta inválida', ms: err.ms });
       if (netErrors.length > 12) netErrors.pop();
     }
     if (!o.quiet) log.warn(err.message);

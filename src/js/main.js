@@ -28,12 +28,14 @@ import { registerTizenKeys, IS_WEB } from './lib/platform.js';
 import * as intro from './lib/intro.js';
 import * as screensaver from './lib/screensaver.js';
 import * as webkeys from './lib/webkeys.js';
+import { ensureWebapis } from './lib/avplayer.js';
 
 // Abertura (logo + som): o app só aparece depois dela, mesmo que carregue antes.
 let introDone = Promise.resolve();
 
 function boot() {
   const s = store.settings();
+  ensureWebapis();
   initI18n();
   applyTheme(s);
   document.body.classList.toggle('low-memory', s.lowMemory !== false);

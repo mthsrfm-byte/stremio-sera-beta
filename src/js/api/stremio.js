@@ -15,8 +15,8 @@ export function reloadProfile() {
   libMem = null;
 }
 
-function call(method, body) {
-  return postJSON(API + method, body).then((res) => {
+function call(method, body, opts) {
+  return postJSON(API + method, body, opts).then((res) => {
     if (res && res.error) {
       const err = new Error(res.error.message || t('Erro da API Stremio'));
       err.code = res.error.code;
@@ -125,7 +125,7 @@ export function cachedAddons() {
 // ---- Biblioteca ----
 export function getLibrary() {
   if (!isLoggedIn()) return Promise.resolve(cachedLibrary());
-  return call('datastoreGet', { authKey: auth.authKey, collection: 'libraryItem', ids: [], all: true }).then((items) => {
+  return call('datastoreGet', { authKey: auth.authKey, collection: 'libraryItem', ids: [], all: true }, { maxBytes: 24 * 1024 * 1024 }).then((items) => {
     const list = Array.isArray(items) ? items : [];
     setLibrary(list);
     return list;

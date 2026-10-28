@@ -6,6 +6,8 @@ import * as store from './store.js';
 
 import { parseMetadata, resolution } from './streammetadata.js';
 import { durationContext, evaluateLight, compareLight } from './smartlight.js';
+import * as formats from './formats.js';
+import { playerName } from './avplayer.js';
 export { resolution };
 export const choiceLabel = 'Smart Choice . Light';
 
@@ -122,11 +124,16 @@ export function smartPick(list, serverOk, context) {
   const ctx = context || choiceContext(null, null, false);
   const previous = ctx.videoId ? rememberedStream(ctx.videoId, list) : null;
   const failed = recentFailures(ctx);
+  const player = playerName();
   const candidates = [];
   (list || []).forEach((stream) => {
     if (!stream || !canPlay(stream, serverOk) || wasTried(stream, failed)) return;
     if (server.isTorrent(stream) && !torrentId(stream)) return;
-    const rank = evaluateLight(parse(stream), ctx, server.isTorrent(stream));
+    let rank = evaluateLight(parse(stream), ctx, server.isTorrent(stream));
+    // O que esta TV já mostrou não tocar fica para a escolha manual; o que já tocou ganha confiança.
+    const learned = rank ? formats.verdict(stream, player) : '';
+    if (learned === 'bad') rank = null;
+    else if (learned === 'ok') rank = Object.assign({}, rank, { compatibility: rank.compatibility + 2 });
     if (rank) candidates.push({ stream, rank, key: streamKey(stream) + (server.isTorrent(stream) ? '' : '|' + (stream.url || '')), previous: previous && streamKey(stream) === streamKey(previous) });
   });
   candidates.sort(compareLight);

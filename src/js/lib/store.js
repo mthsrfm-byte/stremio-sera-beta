@@ -113,14 +113,25 @@ export function set(key, value) {
   rawSet(profileKey(activeProfile().id, key), value);
 }
 
+// ---------- Dados da TV (iguais para todos os perfis, ex.: formatos que o player toca) ----------
+export function getDevice(key, fallback) {
+  return rawGet('tv:' + key, fallback);
+}
+
+export function setDevice(key, value) {
+  rawSet('tv:' + key, value);
+}
+
 // ---------- Preferências ----------
 // Da TV (iguais para todos os perfis):
-const DEVICE_KEYS = ['lowMemory', 'nativeTorrent', 'introSound', 'serverUrl', 'tmdbKey', 'mdblistKey', 'smoothScroll', 'devlogUrl', 'lastUpdateCheck', 'askProfile', 'wizardDone', 'language', 'screensaver'];
+const DEVICE_KEYS = ['lowMemory', 'nativeTorrent', 'player', 'playerBuffer', 'introSound', 'serverUrl', 'tmdbKey', 'mdblistKey', 'smoothScroll', 'devlogUrl', 'lastUpdateCheck', 'askProfile', 'wizardDone', 'language', 'screensaver'];
 
 const DEFAULT_SETTINGS = {
   // TV
   lowMemory: true, // reduz tarefas de fundo para reservar memória ao player/torrent
   nativeTorrent: true, // motor experimental na própria TV; não requer servidor externo
+  player: 'avplay', // 'avplay' (nativo da Samsung, quando a TV oferece) | 'html5' (proprietário: <video>)
+  playerBuffer: 'normal', // AVPlay: 'normal' (da TV) | 'more' | 'most'
   serverUrl: '',
   tmdbKey: '', // vazio = usa a chave embutida no build (BUILTIN_KEYS em api/extras.js), se houver
   mdblistKey: '',

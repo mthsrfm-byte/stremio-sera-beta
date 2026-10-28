@@ -85,7 +85,7 @@ function saverHarness() {
   const add = (fn, ms) => { timers.set(++next, { fn, ms }); return next; };
   const clear = el => { while (el.firstChild) el.removeChild(el.firstChild); };
   const doc = { hidden: false, addEventListener: (name, fn) => listeners.push({ target: 'doc', name, fn }),
-    querySelector: () => null, getElementsByTagName: () => [], getElementById: () => root };
+    querySelector: () => null, querySelectorAll: () => [], getElementsByTagName: () => [], getElementById: () => root };
   const api = load('src/js/lib/screensaver.js', {
     h: node, clear, store: { settings: () => ({ lowMemory: true, screensaver: 5 }) }, t: text => text,
     hero: { saverItems: () => waiting.promise }, cinemaBackground: url => url + '-bounded', smallBackground: url => url + '-thumb',

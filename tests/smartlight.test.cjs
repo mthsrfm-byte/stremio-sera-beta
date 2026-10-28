@@ -13,13 +13,19 @@ function harness() {
     isTorrent: (s) => typeof s.url === 'string' ? /^magnet:/i.test(s.url) : typeof s.infoHash === 'string',
     isPlayableType: (s) => !!s && (typeof s.url === 'string' || typeof s.infoHash === 'string'),
     needsServer: () => false,
+    player: 'avplay',
+    learned: {},
+    formats: { verdict: (s, player) => mock.learned[player + ':' + s.infoHash] || '' },
   };
   const source = require('fs').readFileSync(path.join(__dirname, '../src/js/lib/streaminfo.js'), 'utf8')
     .replace("import * as server from '../api/server.js';", 'const server = __mock;')
-    .replace("import * as store from './store.js';", 'const store = __mock;');
+    .replace("import * as store from './store.js';", 'const store = __mock;')
+    .replace("import * as formats from './formats.js';", 'const formats = __mock.formats;')
+    .replace("import { playerName } from './avplayer.js';", 'const playerName = () => __mock.player;');
   const built = buildSync({ stdin: { contents: source, resolveDir: path.join(__dirname, '../src/js/lib') }, bundle: true, format: 'cjs', platform: 'node', write: false });
   const module = { exports: {} };
   vm.runInNewContext(built.outputFiles[0].text, { module, __mock: mock, Date, Math, Map });
+  module.exports.__mock = mock;
   return module.exports;
 }
 const api = harness();
@@ -125,4 +131,16 @@ test('short videos use their actual duration instead of a film fallback', () => 
   const short = api.choiceContext({ runtime: '3 min' }, { id: 'short' }, false);
   assert.equal(short.runtimeMinutes, 3);
   assert.equal(pick([stream('a', { gb: 1 })], short), null);
+});
+
+test('formats learned on this TV leave failing profiles to manual choice and favour proven ones', () => {
+  const a = stream('a'), b = stream('b', { seeds: 25 });
+  api.__mock.learned = { ['avplay:' + a.infoHash]: 'bad' };
+  assert.equal(pick([a, b]).stream, b, 'a profile that failed for good is not picked automatically');
+  api.__mock.learned = { ['html5:' + a.infoHash]: 'bad' };
+  assert.equal(pick([a, b]).stream, a, 'what fails in the other player does not count for this one');
+  const c = stream('c', { seeds: 25 }), d = stream('d', { seeds: 25 });
+  api.__mock.learned = { ['avplay:' + d.infoHash]: 'ok' };
+  assert.equal(pick([c, d]).stream, d, 'a proven format wins a tie');
+  api.__mock.learned = {};
 });

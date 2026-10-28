@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=1920, height=1080">
-  <!-- Só o código do próprio app roda; dados de addons/APIs nunca viram script. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; script-src 'self' file: https://cdn.jsdelivr.net; style-src 'self' file: 'unsafe-inline'; img-src * data: blob:; media-src * blob: data:; connect-src * ws://127.0.0.1:8081 ws://localhost:8081; font-src 'self' file:; object-src 'none'; frame-src https://www.youtube-nocookie.com https://www.youtube.com">
+  <!-- Só o código do próprio app roda; dados de addons/APIs nunca viram script.
+       Sem default-src/object-src: o plano de vídeo do AVPlay é um <object> sem endereço, que
+       qualquer uma das duas bloquearia. Scripts, estilos, mídia, fontes e conexões seguem limitados. -->
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' file: https://cdn.jsdelivr.net; style-src 'self' file: 'unsafe-inline'; img-src * data: blob:; media-src * blob: data:; connect-src * ws://127.0.0.1:8081 ws://localhost:8081; font-src 'self' file:; base-uri 'self'; form-action 'none'; frame-src https://www.youtube-nocookie.com https://www.youtube.com">
   <meta name="referrer" content="no-referrer">
   <title>Seraflix Beta</title>
   <link rel="preload" href="fonts/bricolage-grotesque-latin-800-normal.woff2" as="font" type="font/woff2" crossorigin>

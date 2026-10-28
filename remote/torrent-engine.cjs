@@ -2,7 +2,11 @@
 // One ephemeral torrent, bounded verified-piece cache, no FFmpeg and no video files on disk.
 var Readable = require('stream').Readable;
 var parseUrl = require('url').parse;
-var DEFAULT_TRACKERS = ['udp://tracker.opentrackr.org:1337/announce', 'udp://open.stealth.si:80/announce'];
+// Always added to the addon's trackers: one or two dead trackers from a source must not leave the swarm empty.
+var DEFAULT_TRACKERS = ['udp://tracker.opentrackr.org:1337/announce', 'udp://open.stealth.si:80/announce', 'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce', 'udp://open.demonii.com:1337/announce', 'udp://explodie.org:6969/announce'];
+var MAX_TRACKERS = 20;
+var MAX_ORPHANS = 2; // partial pieces kept after a cancelled read, for the player's next Range
 var MiB = 1024 * 1024;
 
 function reply(res, code, data) {
@@ -45,7 +49,14 @@ function getRange(header, length) {
   return { start: start, end: end, partial: true };
 }
 function mime(name) {
-  return /\.mp4$|\.m4v$/i.test(name) ? 'video/mp4' : /\.webm$/i.test(name) ? 'video/webm' : /\.ts$/i.test(name) ? 'video/mp2t' : 'video/x-matroska';
+  return /\.mp4$|\.m4v$/i.test(name) ? 'video/mp4' : /\.webm$/i.test(name) ? 'video/webm' : /\.ts$/i.test(name) ? 'video/mp2t'
+    : /\.avi$/i.test(name) ? 'video/x-msvideo' : /\.mov$/i.test(name) ? 'video/quicktime' : 'video/x-matroska';
+}
+function mergeTrackers(sources) {
+  var list = (Array.isArray(sources) ? sources.slice(0, 16) : []).map(function (x) { return String(x).replace(/^tracker:/, ''); })
+    .filter(function (x, i, all) { return /^(udp|https?):\/\//.test(x) && x.length < 512 && all.indexOf(x) === i && DEFAULT_TRACKERS.indexOf(x) < 0; });
+  // The defaults always stay: only the addon's list is cut to fit the cap.
+  return list.slice(0, MAX_TRACKERS - DEFAULT_TRACKERS.length).concat(DEFAULT_TRACKERS);
 }
 function chooseFile(files, request) {
   if (request.fileIdx !== undefined && request.fileIdx !== null) {
@@ -107,7 +118,11 @@ function boundedStore(limit, onEvict, report) {
 module.exports = function createTorrentService(options) {
   var opts = options || {};
   var base = opts.basePath || '/api/torrent';
-  var cacheLimit = opts.cacheBytes || 8 * MiB;
+  // A number, or a function read at each start (the service sizes it from the TV's free memory).
+  function cacheBudget() {
+    var value = typeof opts.cacheBytes === 'function' ? opts.cacheBytes() : opts.cacheBytes;
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 8 * MiB;
+  }
   var idleMs = opts.idleMs || 10 * 60 * 1000;
   var metadataMs = opts.metadataTimeout || 60000;
   var pieceMs = opts.pieceTimeout || 45000;
@@ -125,7 +140,8 @@ module.exports = function createTorrentService(options) {
       sessionId: s && s.id || null, peers: engine && engine.swarm ? engine.swarm.wires.length : 0,
       downloaded: engine && engine.swarm ? engine.swarm.downloaded : 0,
       speed: engine && engine.swarm && engine.swarm.downloadSpeed ? Math.round(engine.swarm.downloadSpeed()) : 0,
-      partialBytes: engine && engine.partialBytes ? engine.partialBytes() : 0, cacheBytes: s && s.cacheBytes || 0, cacheLimit: cacheLimit, processRssMB: Math.round(process.memoryUsage().rss / MiB),
+      partialBytes: engine && engine.partialBytes ? engine.partialBytes() : 0, cacheBytes: s && s.cacheBytes || 0, cacheLimit: s ? s.cacheLimit : cacheBudget(),
+      prefetch: s ? Object.keys(s.prefetch).length : 0, processRssMB: Math.round(process.memoryUsage().rss / MiB),
       file: s && s.file ? s.file.name : null, error: lastError || null };
   }
   function rememberCancel(id) {
@@ -156,12 +172,11 @@ module.exports = function createTorrentService(options) {
     if (!request || !/^[a-f0-9]{40}$/i.test(request.infoHash || '') || !/^[a-zA-Z0-9_-]{1,96}$/.test(request.sessionId || '')) return cb(new Error('Hash ou sessão inválidos'));
     if (cancelledIds.has(request.sessionId)) return cb(new Error('Torrent cancelado'));
     stop(); lastError = '';
-    var s = current = { id: request.sessionId, engine: null, state: 'metadata', touched: Date.now(), cacheBytes: 0, waits: [], respond: cb };
+    var cacheLimit = cacheBudget();
+    var s = current = { id: request.sessionId, engine: null, state: 'metadata', touched: Date.now(), cacheBytes: 0, cacheLimit: cacheLimit, waits: [], orphans: [], prefetch: {}, respond: cb };
     function ready(err, result) { if (!s.respond) return; var done = s.respond; s.respond = null; clearTimeout(s.metadataTimer); done(err, result); }
     s.metadataTimer = setTimeout(function () { fail(s, new Error('Tempo esgotado ao buscar metadados do torrent')); }, metadataMs);
-    var sources = Array.isArray(request.sources) ? request.sources.slice(0, 16) : [];
-    var trackers = sources.map(function (x) { return String(x).replace(/^tracker:/, ''); }).filter(function (x) { return /^(udp|https?):\/\//.test(x) && x.length < 512; });
-    if (!trackers.length) trackers = DEFAULT_TRACKERS;
+    var trackers = mergeTrackers(request.sources);
     var link = 'magnet:?xt=urn:btih:' + request.infoHash.toLowerCase() + trackers.map(function (tr) { return '&tr=' + encodeURIComponent(tr); }).join('');
     var make = opts.engineFactory || require('./torrent-stream.cjs');
     var engineOptions = Object.assign({ connections: 12, uploads: 0, verify: false, persist: false, trackers: trackers, maxPieceLength: Math.min(cacheLimit, 4 * MiB), timeout: 20000,
@@ -170,6 +185,7 @@ module.exports = function createTorrentService(options) {
       s.engine = make(opts.torrentData || link, engineOptions);
       s.engine.on('wire', guardWire);
       s.engine.on('error', function (e) { if (current === s) fail(s, e); });
+      s.engine.on('download', function (index) { if (current === s) prefetchDone(s, index); });
       s.engine.on('ready', function () {
         if (current !== s) return;
         try {
@@ -190,27 +206,115 @@ module.exports = function createTorrentService(options) {
     } catch (e) { fail(s, e); }
   }
 
+  // Partial pieces left by a cancelled read stay for the player's next Range (it often asks the same
+  // area again), but only a few, and never more than the cache budget in partial bytes.
+  function keepOrphan(s, index) {
+    var engine = s.engine;
+    if (!engine || !engine.forgetPiece || engine.bitfield.get(index)) return;
+    if (s.orphans.indexOf(index) < 0) s.orphans.push(index);
+    trimPartials(s);
+  }
+  function inUse(s, index) {
+    return s.prefetch[index] !== undefined || s.waits.some(function (w) { return w.index === index; });
+  }
+  function trimPartials(s) {
+    var engine = s.engine;
+    if (!engine || !engine.forgetPiece) return;
+    s.orphans = s.orphans.filter(function (i) { return !engine.bitfield.get(i) && !inUse(s, i); });
+    while (s.orphans.length && (s.orphans.length > MAX_ORPHANS || (engine.partialBytes && engine.partialBytes() > s.cacheLimit))) {
+      engine.forgetPiece(s.orphans.shift(), true);
+    }
+  }
+  function forgetOrphan(s, index) {
+    var pos = s.orphans.indexOf(index);
+    if (pos >= 0) s.orphans.splice(pos, 1);
+  }
+
+  // Read-ahead: the next pieces are asked for at low priority, as many as fit in the cache next to
+  // the one being sent, so a slow moment in the swarm does not stall the player at once.
+  function prefetchCount(s) {
+    var pieceLength = s.engine.torrent.pieceLength;
+    return Math.max(0, Math.min(2, Math.floor(s.cacheLimit / pieceLength) - 1));
+  }
+  function lastPiece(s) {
+    return Math.floor((s.file.offset + s.file.length - 1) / s.engine.torrent.pieceLength);
+  }
+  function prefetchFrom(s, next) {
+    var engine = s.engine;
+    if (!engine || !engine.select) return;
+    var count = prefetchCount(s), last = lastPiece(s);
+    dropPrefetch(s, next, next + count - 1);
+    for (var i = next; i < next + count && i <= last; i++) {
+      if (s.prefetch[i] !== undefined || engine.bitfield.get(i)) continue;
+      forgetOrphan(s, i);
+      s.prefetch[i] = prefetchNotify(s, i);
+      engine.select(i, i, 0, s.prefetch[i]);
+    }
+  }
+  function prefetchNotify(s, index) {
+    return function () { if (s.engine && s.engine.bitfield.get(index)) prefetchDone(s, index); };
+  }
+  function prefetchDone(s, index) {
+    var notify = s.prefetch[index];
+    if (notify === undefined) return;
+    delete s.prefetch[index];
+    s.engine.deselect(index, index, 0, notify);
+  }
+  // Prefetch outside [from, to] is dropped (a seek moved elsewhere); its partial data becomes an orphan.
+  function dropPrefetch(s, from, to) {
+    Object.keys(s.prefetch).forEach(function (key) {
+      var index = Number(key);
+      if (index >= from && index <= to) return;
+      var notify = s.prefetch[index];
+      delete s.prefetch[index];
+      s.engine.deselect(index, index, 0, notify);
+      keepOrphan(s, index);
+    });
+  }
+
   function ensurePiece(s, index, callback) {
     var engine = s.engine, done = false;
-    var pieceTimer;
+    var checkTimer, lastProgress = -1, lastProgressAt = Date.now();
     function finish(err, buffer) {
       if (done) return; done = true;
-      clearTimeout(pieceTimer);
+      clearInterval(checkTimer);
       engine.removeListener('download', onDownload);
       engine.deselect(index, index, 1, notify);
-      if (err && engine.forgetPiece && !engine.bitfield.get(index)) engine.forgetPiece(index, true);
       var pos = s.waits.indexOf(finish); if (pos >= 0) s.waits.splice(pos, 1);
+      if (err && engine.forgetPiece && !engine.bitfield.get(index)) {
+        if (err.cancelled) keepOrphan(s, index);
+        else engine.forgetPiece(index, true);
+      }
       callback(err, buffer);
     }
-    function read() { engine.store.get(index, function (err, buffer) { if (!err) finish(null, buffer); else if (current === s && !done) { engine.forgetPiece(index); engine.select(index, index, 1, notify); } }); }
+    finish.index = index;
+    function read() {
+      engine.store.get(index, function (err, buffer) {
+        if (!err) return finish(null, buffer);
+        if (current !== s || done) return;
+        // Evicted between the bitfield check and the read: ask for it again, keeping one selection.
+        engine.forgetPiece(index);
+        engine.deselect(index, index, 1, notify);
+        engine.select(index, index, 1, notify);
+      });
+    }
     function notify() { if (!done && engine.bitfield.get(index)) read(); }
     function onDownload(which) { if (which === index) notify(); }
+    // The deadline is for a piece that stops receiving data, not for a slow piece that keeps arriving.
+    function check() {
+      var progress = engine.pieceProgress ? engine.pieceProgress(index) : 0;
+      if (progress !== lastProgress) { lastProgress = progress; lastProgressAt = Date.now(); return; }
+      if (Date.now() - lastProgressAt >= pieceMs) finish(new Error('Torrent sem dados suficientes; tente outra fonte'));
+    }
     s.waits.push(finish);
-    pieceTimer = setTimeout(function () { finish(new Error('Torrent sem dados suficientes; tente outra fonte')); }, pieceMs);
+    forgetOrphan(s, index);
+    if (s.prefetch[index] !== undefined) prefetchDone(s, index);
+    check();
+    checkTimer = setInterval(check, Math.max(50, Math.min(2000, Math.floor(pieceMs / 4))));
     engine.on('download', onDownload);
     if (engine.bitfield.get(index)) read();
     else engine.select(index, index, 1, notify);
-    return function () { finish(new Error('Leitura cancelada')); };
+    return function () { var e = new Error('Leitura cancelada'); e.cancelled = true; finish(e); };
   }
 
   function stream(req, res, sessionId, fileIdx) {
@@ -227,6 +331,8 @@ module.exports = function createTorrentService(options) {
     if (s.stream) s.stream.destroy();
     if (s.response && s.response !== res && !s.response.writableEnded) s.response.destroy();
     s.response = res;
+    var startIndex = Math.floor((s.file.offset + range.start) / s.engine.torrent.pieceLength);
+    dropPrefetch(s, startIndex, startIndex + prefetchCount(s));
     var cursor = range.start, pending = false, cancelWait = null;
     var source = new Readable({ highWaterMark: 64 * 1024, read: function () {
       if (pending || source.destroyed) return;
@@ -239,7 +345,9 @@ module.exports = function createTorrentService(options) {
         if (source.destroyed || current !== s) return;
         if (err) return source.destroy(err);
         var take = Math.min(buffer.length - offset, range.end - cursor + 1);
-        cursor += take; s.touched = Date.now(); source.push(buffer.slice(offset, offset + take));
+        cursor += take; s.touched = Date.now();
+        prefetchFrom(s, index + 1);
+        source.push(buffer.slice(offset, offset + take));
       });
     }, destroy: function (err, cb) { if (cancelWait) { var cancel = cancelWait; cancelWait = null; cancel(); } cb(err); } });
     s.stream = source;
@@ -271,3 +379,6 @@ module.exports.guardWire = guardWire;
 module.exports.parseRange = getRange;
 module.exports.boundedStore = boundedStore;
 module.exports.chooseFile = chooseFile;
+module.exports.mime = mime;
+module.exports.mergeTrackers = mergeTrackers;
+module.exports.DEFAULT_TRACKERS = DEFAULT_TRACKERS;

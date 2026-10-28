@@ -161,8 +161,25 @@ var pageCache = {};
 // O motor e suas dependências só entram na memória ao preparar um torrent.
 var torrentService = null;
 function nativeTorrents() {
-  if (!torrentService) torrentService = require('./torrent-engine.cjs')({ basePath: '/api/torrent' });
+  if (!torrentService) torrentService = require('./torrent-engine.cjs')({ basePath: '/api/torrent', cacheBytes: torrentCacheBytes });
   return torrentService;
+}
+// Cache de peças medido a cada torrent: um sexto da memória livre da TV, entre 8 e 24 MiB.
+// A memória é do processo do TizenBrew, dividida com o player e a interface.
+var CACHE_MIN = 8 * 1048576;
+var CACHE_MAX = 24 * 1048576;
+function torrentCacheBytes() {
+  var free = memoryInfo().memAvailableMB;
+  if (!(free > 0)) return CACHE_MIN;
+  return Math.max(CACHE_MIN, Math.min(CACHE_MAX, Math.floor(free * 1048576 / 6)));
+}
+function isLoopback(req) {
+  var remote = req.socket && req.socket.remoteAddress || '';
+  return /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote);
+}
+// Um nome que aponta para 127.0.0.1 (DNS rebinding) não passa: o pedido tem que citar o endereço local.
+function localHost(req) {
+  return /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(String(req.headers.host || ''));
 }
 function memoryInfo() {
   var m = { memAvailableMB: null, processRssMB: Math.round(process.memoryUsage().rss / 1048576) };
@@ -174,9 +191,8 @@ function memoryInfo() {
   return m;
 }
 function torrentRoute(req, res) {
-  var remote = req.socket && req.socket.remoteAddress || '';
   var origin = req.headers.origin || '';
-  if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote) ||
+  if (!isLoopback(req) || !localHost(req) ||
       (origin && origin !== 'null' && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin))) {
     return json(res, 403, { error: 'Torrent local disponível apenas para o aplicativo na TV.' });
   }
@@ -1043,7 +1059,7 @@ var server = http.createServer(guarded(function (req, res) {
   if (url === '/api/ip') return json(res, 200, { ip: lanIp() });
   if (url === '/api/version') return json(res, 200, { version: SERVICE_VERSION });
   // Uma versão mais nova deste serviço quer a porta: sai e deixa ela assumir.
-  if (url === '/api/quit' && req.method === 'POST') return quit(res);
+  if (url === '/api/quit' && req.method === 'POST') return isLoopback(req) ? quit(res) : json(res, 403, { error: 'apenas a própria TV' });
   if (url === '/api/pending') {
     lastPoll = Date.now();
     return json(res, 200, { open: takePending() });
@@ -1130,7 +1146,7 @@ var addonServer = http.createServer(guarded(function (req, res) {
   var url = req.url.split('?')[0];
   if (url.indexOf('/px/') === 0) return proxyRoute(req, res, urlLib.parse(req.url, true).query);
   if (url === '/api/version') return json(res, 200, { version: SERVICE_VERSION });
-  if (url === '/api/quit' && req.method === 'POST') return quit(res);
+  if (url === '/api/quit' && req.method === 'POST') return isLoopback(req) ? quit(res) : json(res, 403, { error: 'apenas a própria TV' });
   if (url === '/api/pxlog') return json(res, 200, pxLog);
   if (url === '/api/cal') return calendarRoute(res, urlLib.parse(req.url, true).query);
   if (addonRoute(url, res)) return;

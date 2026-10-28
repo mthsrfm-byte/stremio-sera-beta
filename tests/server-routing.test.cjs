@@ -227,6 +227,9 @@ function playerHarness() {
     getJSON: () => Promise.resolve({}), getText: () => Promise.resolve(''), clearCache: () => events.push('clear-cache'),
     si: { parse: () => ({}), summary: () => '', rememberStream: noop, choiceContext: () => ({}), choiceLabel: 'Smart Choice . Light', markFailed: noop, wasTried: (value, list) => list.indexOf(value) >= 0, smartPick: () => null, lightFileError: () => '' },
     hlsplay: { isHls: () => false },
+    avplayer: { playerName: () => 'html5' },
+    formats: { report: noop, verdict: () => '' },
+    notice: { probe: () => Promise.resolve(null), NOTICE_MAX_SECONDS: 120, accountWide: () => false, sameAccount: () => false, message: () => '' },
     calendar: { startingWithin: () => [] },
     server: {
       nativeEnabled: () => true,
@@ -242,7 +245,7 @@ function playerHarness() {
         return d.promise;
       },
     },
-    addons: { fetchSubtitles: () => Promise.resolve([]) }, stremio: { saveProgress: noop }, skip: {},
+    addons: { fetchSubtitles: () => Promise.resolve([]), isTubeStream: () => false }, stremio: { saveProgress: noop }, skip: {},
     hero: { logo: () => '', background: () => '' },
     menu: (title, items, options) => { currentMenu = options; },
     toast: noop, fmtTime: () => '', timeHM: () => '', choiceDialog: noop, eventTime: () => '',
