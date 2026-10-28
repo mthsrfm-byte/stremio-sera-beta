@@ -1,6 +1,6 @@
 {
   "version": "1.4.0",
-  "commit": "3b688e6f8c3eabde22cb46f0b3877af5bbe059ec",
-  "date": "2026-10-27T21:56:02-03:00",
-  "message": "Beta 1.4.0: player AVPlay, início robusto, formatos aprendidos e motor torrent mais estável"
+  "commit": "dd0e6bdbc62705d9a9bea2898f2240e84c5c30c9",
+  "date": "2026-10-28T18:13:21-03:00",
+  "message": "Smart Choice Light prefere debrid em cache"
 }
