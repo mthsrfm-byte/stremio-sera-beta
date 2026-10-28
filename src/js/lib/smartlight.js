@@ -51,7 +51,8 @@ export function evaluateLight(info, context, torrent) {
   const duration = ctx.runtimeMinutes || (ctx.isSeries ? 45 : 110);
   const mbps = size ? size * 8 / (duration * 60 * 1e6) : null;
   const comfortable = info.res === '720p' ? 4 : info.res === 'SD' ? 2 : 8;
-  const health = !torrent ? 0 : info.seeders === null || info.seeders === undefined ? 2 : info.seeders >= 20 ? 0 : info.seeders >= 5 ? 1 : 3;
+  // Link direto é saudável, menos debrid fora do cache ([RD download]): esse ainda vai baixar.
+  const health = !torrent ? (info.debrid && !info.cached ? 3 : 0) : info.seeders === null || info.seeders === undefined ? 2 : info.seeders >= 20 ? 0 : info.seeders >= 5 ? 1 : 3;
   const load = !size ? 1 : mbps > comfortable ? 2 : ctx.runtimeEstimated !== false ? 1 : 0;
   const mixedAudio = safeAudio && audio.some((c) => SAFE_AUDIO.indexOf(c) < 0);
   const risk = health + load + (mixedAudio ? 1 : 0);
@@ -64,12 +65,14 @@ export function evaluateLight(info, context, torrent) {
   const preferred = ctx.audioLangs || [];
   const wantsPortuguese = preferred.some((code) => /^(por|pob|pt|pt-br)$/i.test(code));
   const language = wantsPortuguese ? (info.dub ? 2 : 0) : (info.original ? 1 : 0);
-  return { risk, health, load, quality, compatibility, seedBand, language, mbps,
+  const cached = info.cached ? 1 : 0;
+  return { risk, health, load, quality, compatibility, seedBand, language, mbps, cached,
     ideal: info.res === '1080p' && health === 0 && load === 0 && !mixedAudio };
 }
 
 export function compareLight(a, b) {
-  return a.rank.risk - b.rank.risk || b.rank.quality - a.rank.quality ||
+  // Com o mesmo risco, debrid em cache ([RD+]) vem antes: abre na hora, sem depender de seeders.
+  return a.rank.risk - b.rank.risk || (b.rank.cached || 0) - (a.rank.cached || 0) || b.rank.quality - a.rank.quality ||
     b.rank.compatibility - a.rank.compatibility || b.rank.seedBand - a.rank.seedBand ||
     b.rank.language - a.rank.language || Number(b.previous) - Number(a.previous) ||
     (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
