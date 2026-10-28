@@ -251,18 +251,18 @@ async function realPeer(t, cacheBytes, size, extra) {
 }
 
 for (const pieces of [2, 3, 5]) {
-  test('REVIEW sequential read with a ' + pieces + '-piece cache downloads every piece once and leaks no selection', { timeout: 25000 }, async t => {
+  test('sequential read with a ' + pieces + '-piece cache downloads every piece once and leaks no selection', { timeout: 25000 }, async t => {
     const ctx = await realPeer(t, pieces * 16384, 256 * 1024);
     const result = await query(ctx.port, 'GET', ctx.url, null, {});
     assert.ok(result.data.equals(ctx.bytes), 'len ' + result.data.length);
     assert.equal(new Set(ctx.downloads).size, ctx.downloads.length, 'dupes: ' + ctx.downloads.join(','));
     await new Promise(resolve => setTimeout(resolve, 200));
-    assert.deepEqual(ctx.engine.selection.map(s => s.from + ':' + s.priority), []);
+    assert.equal(ctx.engine.selection.map(s => s.from + ':' + s.priority).join(','), '', 'no selection left');
     assert.ok(ctx.service.status().cacheBytes <= pieces * 16384);
   });
 }
 
-test('REVIEW chunked sequential Range requests (player style) download every piece once', { timeout: 25000 }, async t => {
+test('chunked sequential Range requests (player style) download every piece once', { timeout: 25000 }, async t => {
   const ctx = await realPeer(t, 3 * 16384, 256 * 1024);
   for (let from = 0; from < 256 * 1024; from += 10000) {
     const to = Math.min(256 * 1024 - 1, from + 9999);
@@ -271,10 +271,10 @@ test('REVIEW chunked sequential Range requests (player style) download every pie
   }
   assert.equal(new Set(ctx.downloads).size, ctx.downloads.length, 'dupes: ' + ctx.downloads.join(','));
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.deepEqual(ctx.engine.selection.map(s => s.from + ':' + s.priority), []);
+  assert.equal(ctx.engine.selection.map(s => s.from + ':' + s.priority).join(','), '', 'no selection left');
 });
 
-test('REVIEW overlapping Range requests (new opened before old closed) stay correct', { timeout: 25000 }, async t => {
+test('overlapping Range requests (new opened before old closed) stay correct', { timeout: 25000 }, async t => {
   const ctx = await realPeer(t, 3 * 16384, 256 * 1024);
   const first = new Promise(resolve => { const r = http.get({ hostname: '127.0.0.1', port: ctx.port, path: ctx.url, headers: { Range: 'bytes=0-' } }, res => { res.on('data', () => {}); res.on('error', () => resolve()); res.on('close', resolve); }); r.on('error', () => resolve()); });
   await new Promise(resolve => setTimeout(resolve, 5));
@@ -284,6 +284,6 @@ test('REVIEW overlapping Range requests (new opened before old closed) stay corr
   const third = await query(ctx.port, 'GET', ctx.url, null, { Range: 'bytes=0-50000' });
   assert.deepEqual(third.data, ctx.bytes.slice(0, 50001));
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.deepEqual(ctx.engine.selection.filter(s => s.priority === 1).map(s => s.from), []);
+  assert.equal(ctx.engine.selection.filter(s => s.priority === 1).map(s => s.from).join(','), '', 'no read selection left');
   assert.ok(ctx.engine.selection.length <= 2, JSON.stringify(ctx.engine.selection.map(s => s.from + ':' + s.priority)));
 });

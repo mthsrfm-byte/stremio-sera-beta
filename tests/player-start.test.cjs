@@ -92,7 +92,7 @@ function harness(o) {
   };
 }
 
-test('REVIEW user pause carried into a new source blocks the slow prompt forever', async () => {
+test('a pause carried into a new source does not block the slow-source prompt', async () => {
   const h = harness();
   h.view.onShow();
   await tick();
@@ -107,7 +107,7 @@ test('REVIEW user pause carried into a new source blocks the slow prompt forever
   assert.ok(h.calls.layers > before, 'slow prompt must appear for a new source that never starts');
 });
 
-test('REVIEW a legit short episode (under 2 min) is treated as a debrid notice and skipped', async () => {
+test('a real short episode (under 2 min) is not treated as a debrid notice', async () => {
   const h = harness({ view: { meta: { id: 'tt2', type: 'series', name: 'Shorts' }, video: { id: 'tt2:1:1', season: 1, episode: 1 }, isSeries: true } });
   h.view.onShow();
   await tick();
@@ -117,7 +117,7 @@ test('REVIEW a legit short episode (under 2 min) is treated as a debrid notice a
   assert.equal(h.calls.markFailed.length, 0, 'short real episode must not be marked failed: ' + JSON.stringify(h.calls));
 });
 
-test('REVIEW a short clip whose title should last 45 min is still a debrid notice', async () => {
+test('a short clip whose title should last 45 min is still a debrid notice', async () => {
   const h = harness({ view: { meta: { id: 'tt3', type: 'series', name: 'Long' }, video: { id: 'tt3:1:1', season: 1, episode: 1 }, isSeries: true } });
   h.context.si.choiceContext = () => ({ runtimeMinutes: 45, runtimeEstimated: false });
   h.view.onShow();
@@ -129,7 +129,7 @@ test('REVIEW a short clip whose title should last 45 min is still a debrid notic
   assert.deepEqual(h.calls.toPlayable, ['A', 'B']);
 });
 
-test('REVIEW a short real episode still advances on ended', async () => {
+test('a short real episode still advances on ended', async () => {
   const h = harness({ view: { meta: { id: 'tt2', type: 'series', name: 'Shorts' }, video: { id: 'tt2:1:1', season: 1, episode: 1 }, isSeries: true } });
   let popped = 0; h.context.router.pop = () => popped++;
   h.view.onShow();
